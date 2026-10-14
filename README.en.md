@@ -15,7 +15,8 @@ English | [简体中文](README.md)
 [![Tests 9 Packages](https://img.shields.io/badge/tests-9%20packages-brightgreen)](#quality--safety)
 [![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#languages)
 
-[Download Latest](https://github.com/CarGuo/AmuxAIClean/releases/latest) ·
+[Download Latest](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) ·
+[All Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases) ·
 [Install Guide](docs/INSTALL.md) ·
 [Security Model](SECURITY.md) ·
 [Roadmap](docs/ROADMAP_V1.md)
@@ -97,9 +98,16 @@ Both **Simplified Chinese** and **English** are supported. The app follows your 
 
 ## Install
 
+<!-- v2026.10.14: public downloads belong to the distribution repository, not the private source repository. -->
+Official installers are published to **[CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease)**.
+Download the DMG and matching SHA256 file from its
+[latest release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest).
+This source repository contains the code and development documentation; maintainers should follow
+the [publishing guide](docs/RELEASE.md#四发布到公开发行仓库).
+
 Fastest path:
 
-1. Grab the published `.dmg` from [Releases](https://github.com/CarGuo/AmuxAIClean/releases/latest).
+1. Grab the published `.dmg` from [Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest).
 2. Drag into Applications. On first launch click "Open Anyway" in System Settings if Gatekeeper blocks it.
 3. For complete scans, allow AmuxAIClean in System Settings -> Privacy & Security -> Full Disk Access. If denied, the app remains usable and marks affected results as incomplete.
 

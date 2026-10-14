@@ -16,6 +16,7 @@
 [![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#多语言)
 
 [下载最新版](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) ·
+[全部发行版本](https://github.com/CarGuo/AmuxAICleanRelease/releases) ·
 [安装指南](docs/INSTALL.md) ·
 [安全模型](SECURITY.md) ·
 [路线图](docs/ROADMAP_V1.md)
@@ -94,6 +95,12 @@
 ---
 
 ## 安装
+
+<!-- v2026.10.14：公开安装包与私有源码仓库分开，所有下载入口固定到发行仓库。 -->
+官方安装包统一发布到 **[CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease)**。
+请从该仓库的 [最新 Release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest)
+下载 DMG 和对应 SHA256 校验文件；本源码仓库负责代码与开发文档。
+维护者上传、发布和验收流程见 [发布指南](docs/RELEASE.md#四发布到公开发行仓库)。
 
 最快路径：
 

@@ -19,7 +19,8 @@
 当前公开发行合同是维护者本地生成的 **Developer ID Application 签名、最终 DMG 公证并
 staple/validate** 的产物。
 
-从 [Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) 下载已发布的
+官方发布与下载仓库是 [CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease)，
+与源码仓库分开。请从其 [最新 Release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) 下载已发布的
 `AmuxAIClean-x.y.z.dmg` 及对应 `.sha256`，然后校验：
 
 ```bash

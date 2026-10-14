@@ -2,6 +2,7 @@
 > 当前产品名、系统下限、Developer ID/Notary 发行、Sentinel、AI、联网与本地数据事实以
 > [README.md](README.md)、[PRIVACY.md](PRIVACY.md)、[SECURITY.md](SECURITY.md) 和
 > [docs/RELEASE.md](docs/RELEASE.md) 为准。
+<!-- v2026.10.14：仅把“最新版”下载入口转到公开发行仓库，历史正文不作为当前安装说明。 -->
 
 <div align="center">
 
@@ -13,11 +14,11 @@
 
 [![CI](https://github.com/CarGuo/AmuxAIClean/actions/workflows/ci.yml/badge.svg)](https://github.com/CarGuo/AmuxAIClean/actions/workflows/ci.yml)
 [![Release](https://github.com/CarGuo/AmuxAIClean/actions/workflows/release.yml/badge.svg)](https://github.com/CarGuo/AmuxAIClean/actions/workflows/release.yml)
-[![Latest](https://img.shields.io/github/v/release/CarGuo/AmuxAIClean?display_name=tag)](https://github.com/CarGuo/AmuxAIClean/releases/latest)
+[![Latest](https://img.shields.io/github/v/release/CarGuo/AmuxAICleanRelease?display_name=tag)](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest)
 [![License](https://img.shields.io/github/license/CarGuo/AmuxAIClean)](LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-15%2B-blue)](#系统要求)
 
-[下载最新版](https://github.com/CarGuo/AmuxAIClean/releases/latest) -
+[下载最新版](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) -
 [安装指南](docs/INSTALL.md) -
 [功能一览](#你能用它干什么) -
 [安全模型](SECURITY.md) -
@@ -77,7 +78,7 @@ AmuxAIClean 是一款 **macOS 本地清理与卸载残留管家**：扫一次就
 
 ### 方法 A：下载 DMG（推荐）
 
-1. 到 [Releases 页](https://github.com/CarGuo/AmuxAIClean/releases/latest) 下载 `AmuxAIClean-x.y.z.dmg`
+1. 到 [Releases 页](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) 下载 `AmuxAIClean-x.y.z.dmg`
 2. 双击挂载，把 `AmuxAIClean.app` 拖进 `/Applications`
 3. **首次双击会被 Gatekeeper 拦下**（这是 ad-hoc 签名的预期）：
    - macOS 15+：系统设置 → 隐私与安全 → 滚到底点"仍要打开"

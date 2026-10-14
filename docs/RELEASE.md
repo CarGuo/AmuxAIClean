@@ -14,6 +14,13 @@
 2. **注意**：`codesign --verify` 只能证明签名结构完整；公开分发闭环还需要 Apple Notary `Accepted`、`stapler staple` 和 `spctl` 校验。
 3. **公开发行仓库**：安装包发布到 [CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease/releases)，与 App 默认更新检查及下载文档保持一致。`CarGuo/AmuxAIClean` 是私有源码仓库；无凭据的 App 不能从这里检查公开更新。
 
+| 用途 | 固定位置 |
+|---|---|
+| 源码、开发文档与构建源码 tag | [CarGuo/AmuxAIClean](https://github.com/CarGuo/AmuxAIClean) |
+| 对外发布 DMG、SHA256、provenance | [CarGuo/AmuxAICleanRelease Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases) |
+| 用户下载最新版 | [公开仓库 latest Release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) |
+| App 默认更新元数据 | `https://api.github.com/repos/CarGuo/AmuxAICleanRelease/releases/latest` |
+
 <!-- v1.6.10 / 2026.10.14：更新默认路由沿用私有源码仓库名，匿名 latest 请求返回 404。
 发行仓库是独立配置，不能由产品名或源码仓库名推导；生产默认路由必须有无网络回归测试，
 发布前另核对公开 latest API 和安装资产。 -->
@@ -138,7 +145,51 @@ tag 只固定源码；公证与实际交互尚未完成时，仍只能按对应�
 
 ---
 
-## 四、用户侧完整性校验
+## 四、发布到公开发行仓库
+
+<!-- v2026.10.14：英文/历史 README 仍把最新版下载指向源码仓库；显式固定发布目标，
+并把已公证候选的字节复用、两个仓库的 tag 含义和公开下载验收放在同一流程中。 -->
+用户批准公开发布后，复用其确认过的最终 DMG、对应 `.sha256` 和 `.provenance.json`。
+仅修改下载文档不需要重打包，也不能把安装包 provenance 改成后续文档提交。
+发布说明应包含变化、升级兼容下限、真实验证范围、源码 commit/tag 和公证结果。
+
+先核对同版本尚未公开发布；若已存在，读取资产与摘要核对，不使用 `--clobber` 覆盖已发布的
+二进制。以下命令均显式指定**公开发行仓库**，不依赖当前 checkout 的默认 remote：
+
+```bash
+RELEASE_VERSION=x.y.z
+RELEASE_DIST_DIR="dist/release-${RELEASE_VERSION}"
+RELEASE_NOTES="build/release-${RELEASE_VERSION}-evidence/release-notes.md"
+RELEASE_PUBLIC_HEAD="$(gh api repos/CarGuo/AmuxAICleanRelease/commits/main --jq '.sha')"
+
+gh release create "v${RELEASE_VERSION}" \
+  --repo CarGuo/AmuxAICleanRelease \
+  --target "$RELEASE_PUBLIC_HEAD" --draft \
+  --title "AmuxAIClean ${RELEASE_VERSION}" --notes-file "$RELEASE_NOTES" \
+  "${RELEASE_DIST_DIR}/AmuxAIClean-${RELEASE_VERSION}.dmg" \
+  "${RELEASE_DIST_DIR}/AmuxAIClean-${RELEASE_VERSION}.dmg.sha256" \
+  "${RELEASE_DIST_DIR}/AmuxAIClean-${RELEASE_VERSION}.provenance.json"
+
+gh release view "v${RELEASE_VERSION}" --repo CarGuo/AmuxAICleanRelease \
+  --json tagName,isDraft,isPrerelease,assets,body
+```
+
+核对草稿内三份资产的名称、大小、摘要及发布说明后，执行已经获得授权的公开发布：
+
+```bash
+gh release edit "v${RELEASE_VERSION}" --repo CarGuo/AmuxAICleanRelease \
+  --draft=false --latest
+```
+
+公开仓库只含产品介绍与发行附件，其版本 tag 指向该仓库的文档提交。
+安装包源码身份以 provenance 的 `gitHead` 和**源码仓库的同名 tag**为准；不要把公开仓库的
+“Source code”自动归档当作 App 源码，也不要向公开仓库推送私有源码来对齐 commit。
+
+发布后必须匿名核对公开 latest API 的 tag、Release 页面和三份资产链接，再下载最终 DMG
+与校验文件复核 SHA256。同步公开仓库 README 的当前版本、固定版本下载链接和更新来源说明；
+本源码仓库中英文 README、安装文档的通用下载入口始终指向公开 latest，不固定旧版本。
+
+## 五、用户侧完整性校验
 
 维护者发布 DMG 与对应 `.sha256` 文件后，用户下载可在终端：
 
@@ -152,7 +203,7 @@ SHA256 只证明字节一致，不证明 Apple Gatekeeper 已接受。Gatekeeper
 
 ---
 
-## 五、fork 项目签名
+## 六、fork 项目签名
 
 fork 后请替换自己的 Team / signing 配置：
 
