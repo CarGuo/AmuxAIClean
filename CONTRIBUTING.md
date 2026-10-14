@@ -4,7 +4,7 @@
 
 1. [PITFALLS.md](PITFALLS.md)：本项目踩过的所有坑，特别是涉及 APFS / TCC / firmlinks / NSXPC 的红线
 2. [SECURITY.md](SECURITY.md)：安全模型与红线
-3. [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md)：v1.0 范围与验收
+3. [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md) 与 [docs/USER_GUIDE.md](docs/USER_GUIDE.md)：当前产品与使用方式
 
 ---
 
@@ -27,25 +27,27 @@ cd AmuxAIClean
 
 1. 从 `main` fork & branch（命名：`fix/xxx`、`feat/xxx`、`chore/xxx`、`docs/xxx`）
 2. 每个 PR 只解决一件事，避免大 PR
-3. **写代码前先写测试**或同步增加测试（红线见下文）
+3. 为实际行为变化补充必要的回归测试；文档和低影响外观修改先选择适当的静态或视觉验证，避免无效用例
 4. 本地跑通全部 9 个包的单测（v1.5.x 起 XPCBridge 已下线，新增 BrewKit / FileSearchKit / AIKit）：
 
    ```bash
    for pkg in ScanKit SafetyKit AppUI HeuristicKit LogKit BrewKit FileSearchKit AIKit TestHarness; do
-     (cd "Packages/$pkg" && swift test) || exit 1
+     if [ "$pkg" = "ScanKit" ]; then
+       (cd "Packages/$pkg" && swift test --parallel --build-system native) || exit 1
+     else
+       (cd "Packages/$pkg" && swift test --parallel) || exit 1
+     fi
    done
    ```
 
 5. 跑通 xcodebuild Debug：
 
    ```bash
-   xcodebuild -scheme AmuxAIClean -configuration Debug \
-     CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO \
-     -derivedDataPath build/dd build
+   xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
    ```
 
-6. 提交 PR 前保留本地测试与构建摘要。当前 GitHub Actions job 全部显式停用，不能把
-   Actions 页面或“未运行”状态当作质量证据；恢复 CI 前以 `AGENTS.md` 完成门槛为准。
+6. 提交前保留测试、构建或视觉检查摘要，并按 `AGENTS.md` 的实际改动范围说明未验证部分。
+   当前仓库没有 GitHub Actions 工作流；不能把未运行的自动检查当作质量证据。
 
 ---
 
@@ -55,7 +57,7 @@ cd AmuxAIClean
 
 1. **不允许新增 unlink / removeItem(at:)**：任何"删除候选"路径必须走 [TrashPipeline](Packages/AppUI/Sources/AppUI/TrashPipeline.swift) -> NSWorkspace.recycle
 2. **不允许削弱已有测试**：删测试、把断言改成 `XCTAssertTrue(true)`、改 expected 值"修绿"一律 reject。如果测试本身有 bug，必须先在 PR 描述里说明判据，再修测试
-3. **不允许默认 dryRun=false**：新加的删除路径默认必须 dryRun
+3. **执行层默认 dry-run**：真删授权必须由统一确认状态机生成；专业模式和 Release UI 不展示 dry-run 开关
 4. **不允许 try?**：错误必须 log 或上抛；如果确实想忽略，必须写注释说明为什么
 5. **不允许抄竞品源码**：可以参考思路、读 commit message，但不能复制粘贴有 license 限制的代码（特别是 GPL 项目如 ncdu）
 6. **不允许在 actor / Sendable 上偷懒**：Swift 6 strict concurrency 必须严格满足，warnings-as-errors 不能放过

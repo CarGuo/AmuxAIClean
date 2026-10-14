@@ -1,11 +1,13 @@
 # 使用条款 / Terms of Use
 
-最后更新：2026-07-18
-适用版本：AmuxAIClean v1.6.1+
+最后更新：2026-10-14
+当前文档基线：AmuxAIClean v1.6.12（升级兼容下限见安装指南）
 
 ## 0. 接受条款
 
 下载、安装或运行 AmuxAIClean 即表示你已阅读并同意本条款。如不同意，请勿安装或立即卸载（卸载方式见 [README.md](README.md)）。
+
+<!-- v2026.10.14：内置规则的事实描述与独立发行/源码仓库一致；不改变确认、恢复及责任边界。 -->
 
 ## 1. 许可协议
 
@@ -36,7 +38,7 @@ AmuxAIClean 的文件清理统一调用 macOS 系统回收接口，将项目**�
 
 ### 3.2 启发式扫描的局限
 
-AmuxAIClean 的「可清理项」基于公开的、社区维护的 [Vendor Rules](Resources/Rules/vendors.yaml) 和启发式规则推断，**无法保证 100% 准确**：
+AmuxAIClean 的「可清理项」基于内置 [Vendor Rules](Resources/Rules/vendors.yaml) 和启发式规则推断，**无法保证 100% 准确**：
 
 - 极少数情况下可能把仍在使用的缓存识别为可清理
 - 第三方 App 的私有数据格式如发生变化，旧规则可能误判

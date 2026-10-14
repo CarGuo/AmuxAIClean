@@ -1,190 +1,141 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="128" alt="AmuxAIClean" />
+<img src="docs/assets/logo.png" width="112" alt="AmuxAIClean" />
 
 # AmuxAIClean
 
-**An open-source, auditable, safe disk cleaner for macOS.**
+**Native disk analysis and cleanup for macOS.**
 
-English | [简体中文](README.md)
+Understand directory usage, review candidates, then decide what to clean.
 
-[![License MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-<!-- v2026.07.16: the product deployment floor is the contracted Ventura 13.5 baseline. -->
-[![macOS 13.5+](https://img.shields.io/badge/macOS-13.5%2B-success)](docs/INSTALL.md)
-[![Swift 6](https://img.shields.io/badge/Swift-6-orange)](https://swift.org)
-[![Tests 9 Packages](https://img.shields.io/badge/tests-9%20packages-brightgreen)](#quality--safety)
-[![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#languages)
+English · [简体中文](README.md)
+
+[![Release](https://img.shields.io/github/v/release/CarGuo/AmuxAICleanRelease)](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest)
+[![macOS 13.5+](https://img.shields.io/badge/macOS-13.5%2B-1677FF)](docs/INSTALL.md)
+[![Universal](https://img.shields.io/badge/Apple_Silicon_%2F_Intel-Universal-00A99D)](docs/INSTALL.md)
+[![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [Download Latest](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) ·
-[All Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases) ·
-[Install Guide](docs/INSTALL.md) ·
-[Security Model](SECURITY.md) ·
-[Roadmap](docs/ROADMAP_V1.md)
+[User Guide](docs/USER_GUIDE.en.md) · [Installation](docs/INSTALL.md) ·
+[Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases) · [Documentation](docs/README.md)
 
 </div>
 
-> **Special Thanks**: Sponsored by the [https://amux.ai/](https://amux.ai/) relay platform, which provided the development tokens and Apple Developer account for this project — and that is why the project is named **AmuxAIClean**.
+<div align="center">
+<p><sub>Development supported by</sub></p>
+<a href="https://amux.ai/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/amux-logo-dark.svg" />
+    <img src="docs/assets/amux-logo.svg" width="180" alt="Amux" />
+  </picture>
+</a>
+<p><sub>Development tokens and the Apple Developer account are sponsored by Amux.<br/>This support also gave AmuxAIClean its name.</sub></p>
+</div>
 
----
+<!-- v2026.10.14: replace the v1.0–v1.5 introduction and images with the v1.6.12 product structure.
+Current production views and isolated examples back these images; see docs/screenshots/README.md. -->
 
-## What it does for you
+## Normal mode: Analyze, Clean, Optimize, Status
 
-- **Find what you can actually delete**: user caches, app logs, Xcode build artifacts, downloads, trash.
-- **Reclaim space stolen by code projects**: detect build / node_modules / target / .gradle / DerivedData across 12+ ecosystems including Android, Flutter, iOS, React Native, Electron, Rust, Go, Python.
-- **See big files at a glance**: top 200 files >= 100 MB on a single screen, sortable by size or modification date.
-- **Truly uninstall apps**: pick an installed app and see every leftover it dropped under config / cache / Preferences / Group Containers.
-- **Inspect classic launch agents**: read-only coverage of the three launchd plist directories; modern Login & Background Items remain managed by System Settings.
-- **Keep a recovery window**: everything goes to Trash and `unlink(2)` is never called. Restoration can be attempted while the exact Trash item still exists.
+New windows open in Normal mode. Its four sections combine space exploration, cleanup review and system information.
 
----
+<img src="docs/screenshots/01-analyze-en.jpg" width="1100" alt="Analyze workspace: scope controls, disk treemap, directory details and system status strip" />
 
-## Screenshots
+| Section | What you can do |
+|---|---|
+| **Analyze** | Scan a disk or folder, compare usage in a treemap, drill into directories, search and inspect details. |
+| **Clean** | Scan system/log files, application caches and explicitly enabled developer caches; review candidates before moving them to Trash. |
+| **Optimize** | Inspect supported user-level maintenance tasks and classic launch agents; follow each tool's instructions. |
+| **Status** | View CPU, memory, disk, battery, network rates, uptime and thermal status. |
 
 <table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/02-scan-result.png" alt="Recommended scan results" /><br/>
-      <sub><b>Recommended Scan</b>: live category scan with three-color safety badges, sorted by physical footprint</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/03-large-files.png" alt="Large files Top 200" /><br/>
-      <sub><b>Large Files</b>: top 200 files >= 100 MB on one screen; name / path / size / mtime sortable</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/04-uninstall.png" alt="Uninstall leftovers" /><br/>
-      <sub><b>Uninstall Leftovers</b>: detect config / cache / Preferences left around for an installed app</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/01-overview.png" alt="Main window" /><br/>
-      <sub><b>Main Window</b>: five entry points - Recommended / Custom Paths / Large Files / Full Disk / Dev Artifacts</sub>
-    </td>
-  </tr>
+<tr>
+<td width="50%" valign="top"><img src="docs/screenshots/02-clean-en.jpg" alt="Clean workspace: candidate categories, suggestions and review controls" /><br/><sub>Clean: scan scope, categories and review.</sub></td>
+<td width="50%" valign="top"><img src="docs/screenshots/03-status-en.jpg" alt="Status workspace with system metrics and recent readings" /><br/><sub>Status: system readings in one place.</sub></td>
+</tr>
 </table>
 
-> Want to reproduce these screenshots? Just run `./Scripts/screenshots.sh`.
+## Professional mode: files, directories and development tools
 
----
+Switch modes at the top of the window. The sidebar contains recommended scans, developer artifacts, full-disk scans,
+common application caches, custom paths and individual tools.
 
-## What we do, what we do not
+- **Tree and List**: browse directory sizes and file counts with access/coverage information; use List for batch selection.
+- **Large Files**: defaults to files at least 100 MB and a Top 200 view, with size/mtime sorting, type filters and Quick Look. The threshold is configurable.
+- **Apps and duplicates**: inspect application usage and associated leftovers; review duplicate groups while retaining a specific copy.
+- **Development tools**: inspect artifacts and caches for Xcode, Android, Flutter, Node.js, Rust, Go and Python, with Homebrew, port cleanup and ecosystem workflows.
+- **Stash and history**: gather candidates for later review, and attempt to restore matching Trash items from recent cleanup records.
 
-**We do**
+<img src="docs/screenshots/04-tree-en.jpg" width="1100" alt="Professional Tree results: directory size, file count, modification date and row actions" />
 
-- Local disk usage scanning, large-file finder, uninstall leftover sweep, launch-item inspector, duplicate detection, developer build-artifact scanning.
-- Every delete goes to Trash; restoration can be attempted only while the matching Trash item still exists.
-- The optional Sentinel is off by default. When enabled, it runs as a non-privileged agent for the signed-in user and watches Trash and cleanup hotspots locally. The current build automatically retires historical root-domain registrations; see [PRIVACY.md](PRIVACY.md) for its records, migration, unregister flow, and removal boundary.
-- Local safety decisions do not depend on the network. The App itself creates HTTP requests only
-  for GitHub update checks (enabled at launch on first install and configurable in Settings) and
-  user-enabled, user-initiated AI requests. Scanning a network share or cloud placeholder, or
-  invoking Quick Look, may still cause macOS or the storage provider to read remotely. See
-  [PRIVACY.md](PRIVACY.md) for path and
-  metadata fields, default redaction, and provider boundaries.
+<sub>Tree results: compare usage by directory.</sub>
 
-**We do not**
+<img src="docs/screenshots/05-large-files-en.jpg" width="1100" alt="Large Files results with file-type filters and size columns" />
 
-- Network traffic monitoring. Fake "memory cleaning". Fake "startup boost". Browser history wipers.
-- Subscriptions. Telemetry. Ads. Bundled installers.
+<sub>Large Files results: locate the largest items.</sub>
 
-Why? See [PITFALLS.md](PITFALLS.md) and [SECURITY.md](SECURITY.md).
+In the action column, ✨ opens AI assistance, the tray adds an item to Stash, and the Trash icon starts cleanup review.
+The column-header question mark explains these actions with an example. The top-right question mark reopens the control guide.
 
----
+<img src="docs/screenshots/06-row-actions-en.jpg" width="640" alt="Action-column example explaining AI assistance, Stash and Move to Trash" />
 
-## Languages
+> Images were updated on October 14, 2026 using offscreen renders of the production views corresponding to v1.6.12.
+> Files and candidate sizes are isolated examples; Status uses read-only readings from the capture machine.
+> These workspace/tool images are not real user scans, performance benchmarks or runtime acceptance evidence.
+> [Image provenance and reproduction](docs/screenshots/README.md).
 
-Both **Simplified Chinese** and **English** are supported. The app follows your system language automatically. You can also pin a per-app language in System Settings.
+## Confirmation and recovery
 
----
+Measured disk usage is not the amount available for cleanup. Restricted, incomplete and unknown scopes retain their notices.
 
-## Install
+Normal mode uses detailed review. Professional mode uses a compact confirmation for ordinary items and strict confirmation
+for eligible overrides, requiring `DELETE`. Protected boundaries, paths outside the allowed scope and actual OS permissions
+cannot be removed by strict confirmation. Complete success uses a brief notice; failures, partial success and unsubmitted
+requests use an explanatory dialog.
 
-<!-- v2026.10.14: public downloads belong to the distribution repository, not the private source repository. -->
-Official installers are published to **[CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease)**.
-Download the DMG and matching SHA256 file from its
-[latest release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest).
-This source repository contains the code and development documentation; maintainers should follow
-the [publishing guide](docs/RELEASE.md#四发布到公开发行仓库).
+File cleanup uses system Trash. History can attempt restoration only while the matching Trash object still exists and its
+identity is verifiable. Emptying Trash removes this recovery window. Simulator Device/Runtime operations in the Apple workflow
+are explicitly identified managed uninstalls and cannot be restored from Trash. See the [User Guide](docs/USER_GUIDE.en.md).
 
-Fastest path:
+## Installation and updates
 
-1. Grab the published `.dmg` from [Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest).
-2. Drag into Applications. On first launch click "Open Anyway" in System Settings if Gatekeeper blocks it.
-3. For complete scans, allow AmuxAIClean in System Settings -> Privacy & Security -> Full Disk Access. If denied, the app remains usable and marks affected results as incomplete.
+The official DMG supports **macOS 13.5+, Apple Silicon and Intel**, with **Simplified Chinese / English** and light/dark appearance.
 
-Full install / TCC / signature verification flow is in [docs/INSTALL.md](docs/INSTALL.md).
+1. Download the DMG and matching SHA256 file from the [official latest release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest).
+2. Verify the file, open the DMG, drag AmuxAIClean into Applications and launch it.
+3. Grant Full Disk Access if needed. Restricted scopes retain incomplete notices; after an upgrade or permission change,
+   restart as instructed by macOS and rescan.
 
-> The current public release path is a maintainer-local **Developer ID Application signed and notarized final DMG**. See [docs/RELEASE.md](docs/RELEASE.md).
+The supported upgrade floor is **1.6.2**. Older configuration, service identities and Undo history from 1.5.9, 1.6.0 and 1.6.1
+are not automatically migrated. In-app update checks use the public distribution repository,
+[CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease).
+It hosts the introduction, downloads and feedback; this repository holds source and developer documentation and requires repository access.
 
----
+[Installation details](docs/INSTALL.md) · [Maintainer publishing guide](docs/RELEASE.md)
 
-## Quality & Safety
+## Privacy and quality
 
-- **Tests across 9 first-party SPM packages**: [ScanKit](Packages/ScanKit) / [SafetyKit](Packages/SafetyKit) / [AppUI](Packages/AppUI) / [HeuristicKit](Packages/HeuristicKit) / [LogKit](Packages/LogKit) / [BrewKit](Packages/BrewKit) / [FileSearchKit](Packages/FileSearchKit) / [AIKit](Packages/AIKit) / [TestHarness](Packages/TestHarness). The exact test count is whatever the current run reports.
-- **Three-tier safety engine**: every delete candidate runs through a `safe / confirm / forbid` verdict. Rules are public YAML in [vendors.yaml](Resources/Rules/vendors.yaml).
-- **Hard skip on TCC-sensitive paths**: Mail / Messages / Calendars / Photos Library never enter the candidate set, so we cannot accidentally trash your mail.
-- **End-to-end integration tests pin the contract**: [V12SafetyIntegrationTests](Packages/AppUI/Tests/AppUITests/V12SafetyIntegrationTests.swift) asserts what must never be deletable.
-- **Never `unlink(2)`**: every delete path is forced through `NSWorkspace.recycle()` (Trash).
+Local safety decisions do not depend on AI. AI is off by default and sends context only after configuration and an explicit
+request. Launch update checks are enabled on first install and can be disabled. See the [Privacy Policy](PRIVACY.md) for network
+shares, cloud placeholders and Quick Look. Optional Sentinel is off by default and runs a local, non-privileged agent for the signed-in user.
 
-Full threat model in [SECURITY.md](SECURITY.md).
+Nine Swift packages cover scanning, safety, authorization, history storage and supporting functionality. Package tests,
+builds, runtime interaction and installer checks are recorded separately; rendered images do not establish functional acceptance.
+See [Current Product State](docs/CURRENT_STATE.md), the [Deletion Contract](docs/DELETION_UX_CONTRACT.md) and [Security](SECURITY.md).
 
----
+## Development and documentation
 
-## Build it yourself
-
-```bash
-git clone git@github.com:CarGuo/AmuxAIClean.git
-cd AmuxAIClean
-./Scripts/setup_dev.sh
-```
-
-> **Forks must read this**: [AmuxAIClean.xcodeproj/project.pbxproj](AmuxAIClean.xcodeproj/project.pbxproj) currently uses `Automatic + Apple Development` for Debug and `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)` for Release. Before the first build, change the Team/signing setup to your own. See the "Signing Configuration" section in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Developers with source access use the checked-in native Xcode project. Toolchain requirements are separate from the user installation floor.
 
 ```bash
 xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
 ```
 
-Full dev environment, signing, debugging tips in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+[Development and tests](docs/DEVELOPMENT.md) · [Contributing](CONTRIBUTING.md) ·
+[Documentation index](docs/README.md) · [Changelog](CHANGELOG.md)
 
----
-
-## Roadmap
-
-| Version | Theme | Status |
-|---|---|---|
-| v1.0 | Full-disk scan / Recommended / Large files / Uninstall leftovers / SafetyEngine | Shipped |
-| v1.1 | App footprint / Launch items / TCCSkipList / mtime filter / Auto update check | Shipped |
-| v1.2 | Type buckets / Quick Look / Export / Duplicate detection (read-only) | Shipped |
-| v1.3 | Floating HUD / Status-bar tray / Settings refactor | Shipped |
-| v1.4 | Developer build-artifact scanner (Android / Flutter / iOS / RN / 12+ ecosystems) | Shipped |
-
-See [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md).
-
----
-
-## Document map
-
-| Doc | Content |
-|---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | Install, Gatekeeper, TCC Full Disk Access |
-| [docs/RELEASE.md](docs/RELEASE.md) | Local Developer ID / DMG-only notarization flow and SHA256 verification |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Dev environment, build scripts, local debugging |
-| [docs/DEV_ARTIFACTS_RULES.md](docs/DEV_ARTIFACTS_RULES.md) | Developer artifact scanner rules & extension |
-| [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md) | 23-dim x 8-competitor feature matrix |
-| [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md) | Version plan and per-milestone scope |
-| [SECURITY.md](SECURITY.md) | Threat model, hard rules, vulnerability report |
-| [PRIVACY.md](PRIVACY.md) | Network fields, local stores, permissions, Sentinel, and removal order |
-| [PITFALLS.md](PITFALLS.md) | Lessons learned from this whole product category |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | PR red lines, commit conventions |
-
----
-
-## Acknowledgements
-
-- Sponsored by the [https://amux.ai/](https://amux.ai/) relay platform for providing development tokens and the Apple Developer account.
-- Thanks to [Pearcleaner](https://github.com/alienator88/Pearcleaner) for the prior art on TCC skip lists and vendor rule curation. All rule files in this repo are independently authored; no competitor source is referenced.
-
----
+Historical competitor studies and plans retain their original baselines. Use the User Guide and Current Product State for current behavior.
 
 ## License
 
-[MIT](LICENSE) · Copyright (c) 2026 CarGuo
+[MIT](LICENSE) · Copyright © 2026 CarGuo

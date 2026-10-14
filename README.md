@@ -1,188 +1,138 @@
 <div align="center">
 
-<img src="docs/assets/logo.png" width="128" alt="AmuxAIClean" />
+<img src="docs/assets/logo.png" width="112" alt="AmuxAIClean" />
 
 # AmuxAIClean
 
-**面向 macOS 的开源、可审计、安全清理管家。**
+**原生 macOS 空间分析与清理工具。**
 
-[English](README.en.md) | 简体中文
+看清目录占用，审阅清理候选，再决定如何整理。
 
-[![License MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-<!-- v2026.07.16：产品部署下限统一为已纳入兼容合同的 Ventura 13.5。 -->
-[![macOS 13.5+](https://img.shields.io/badge/macOS-13.5%2B-success)](docs/INSTALL.md)
-[![Swift 6](https://img.shields.io/badge/Swift-6-orange)](https://swift.org)
-[![Tests 9 Packages](https://img.shields.io/badge/tests-9%20packages-brightgreen)](#质量与安全)
-[![i18n zh-Hans EN](https://img.shields.io/badge/i18n-zh--Hans%20%7C%20EN-informational)](#多语言)
+[English](README.en.md) · 简体中文
+
+[![Release](https://img.shields.io/github/v/release/CarGuo/AmuxAICleanRelease)](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest)
+[![macOS 13.5+](https://img.shields.io/badge/macOS-13.5%2B-1677FF)](docs/INSTALL.md)
+[![Universal](https://img.shields.io/badge/Apple_Silicon_%2F_Intel-Universal-00A99D)](docs/INSTALL.md)
+[![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 [下载最新版](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) ·
-[全部发行版本](https://github.com/CarGuo/AmuxAICleanRelease/releases) ·
-[安装指南](docs/INSTALL.md) ·
-[安全模型](SECURITY.md) ·
-[路线图](docs/ROADMAP_V1.md)
+[使用指南](docs/USER_GUIDE.md) · [安装说明](docs/INSTALL.md) ·
+[版本记录](https://github.com/CarGuo/AmuxAICleanRelease/releases) ·
+[文档目录](docs/README.md)
 
 </div>
 
-> **特别鸣谢**：感谢 [https://amux.ai/](https://amux.ai/) 中转平台赞助本项目的开发 Token 与 Apple 开发者账号，这也是本项目命名为 **AmuxAIClean** 的原因。
+<div align="center">
+<p><sub>开发支持</sub></p>
+<a href="https://amux.ai/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/amux-logo-dark.svg" />
+    <img src="docs/assets/amux-logo.svg" width="180" alt="Amux" />
+  </picture>
+</a>
+<p><sub>感谢 Amux 提供开发 Token 与 Apple 开发者账号支持。<br/>AmuxAIClean 的命名也源于这份赞助。</sub></p>
+</div>
 
----
+<!-- v2026.10.14：旧首页和截图停留在 v1.0–v1.5；按 v1.6.12 产品结构更新。
+截图复用当前生产视图与隔离示例，来源见 docs/screenshots/README.md。 -->
 
-## 它能为你做什么
+## 普通模式：分析、清理、优化、状态
 
-- 一键找出 Mac 里**真正能删的垃圾**：用户缓存、应用日志、Xcode 构建产物、下载历史、废纸篓。
-- **找回被代码项目偷走的硬盘**：识别 Android / Flutter / iOS / RN / Electron / Rust / Go / Python 等十多种生态的 build / node_modules / target / .gradle / DerivedData。
-- **一目了然看大文件**：≥100 MB Top 200 一屏看完，按大小或修改日期排序。
-- **彻底卸载残留**：选中已安装 App，自动列出它在系统各处留下的配置 / 缓存 / Preferences / Group Containers。
-- **检查传统启动代理**：只读列出三个 launchd plist 目录下的 LaunchAgents / LaunchDaemons；现代“登录项与扩展”仍由系统设置管理。
-- **删除保留恢复窗口**：所有删除统一走废纸篓，永远不调用 `unlink(2)`；清倒废纸篓前可尝试从最近记录或 Finder 恢复。
+新窗口默认进入普通模式。四个栏目把空间定位、候选审阅和系统信息放在同一个工作台。
 
----
+<img src="docs/screenshots/01-analyze-zh-Hans.jpg" width="1100" alt="普通工作台的分析页：范围选择、矩形空间图、目录明细与状态栏" />
 
-## 截图
+| 栏目 | 使用方式 |
+|---|---|
+| **分析** | 选择磁盘或文件夹，扫描后用矩形空间图比较占用，逐层进入目录，搜索和查看明细。 |
+| **清理** | 扫描系统与日志、应用缓存，以及主动选入的开发缓存；先审阅候选，再确认移到废纸篓。 |
+| **优化** | 查看支持的用户态维护任务与传统启动代理；每个工具按其说明操作。 |
+| **状态** | 查看 CPU、内存、磁盘、电池、网络速率、运行时间与散热状态。 |
 
 <table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/02-scan-result.png" alt="推荐扫描结果" /><br/>
-      <sub><b>推荐清理</b>：选中类目实时扫描，三色徽章标注安全度，按物理占用降序</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/03-large-files.png" alt="大文件 Top 200" /><br/>
-      <sub><b>大文件</b>：≥100 MB Top 200 一屏看完，名称 / 路径 / 大小 / 修改日期四列排序</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/04-uninstall.png" alt="卸载残留" /><br/>
-      <sub><b>卸载残留</b>：识别已安装 App 在系统各处的配置 / 缓存 / Preferences 残留</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/01-overview.png" alt="主界面" /><br/>
-      <sub><b>主界面</b>：推荐清理 / 自定义路径 / 大文件 / 整盘 / 开发者构建产物 五类入口</sub>
-    </td>
-  </tr>
+<tr>
+<td width="50%" valign="top"><img src="docs/screenshots/02-clean-zh-Hans.jpg" alt="普通清理页：候选分类、建议与需要确认的项目" /><br/><sub>清理：扫描范围、分类结果与审阅入口。</sub></td>
+<td width="50%" valign="top"><img src="docs/screenshots/03-status-zh-Hans.jpg" alt="普通状态页：系统指标与近期读数" /><br/><sub>状态：集中查看系统读数。</sub></td>
+</tr>
 </table>
 
-> 想自己复现这些截图？跑一次 `./Scripts/screenshots.sh` 即可。
+## 专业模式：目录、文件与开发环境
 
----
+窗口顶部可切换专业模式。侧栏提供推荐扫描、开发者构建产物、整盘扫描、常见软件缓存、
+自定义路径和工具入口。
 
-## 我们做什么、不做什么
+- **树形与清单**：逐层浏览容量和文件数，查看权限与扫描完整性；清单支持批量选择。
+- **大文件**：默认筛选至少 100 MB 的文件并展示 Top 200，支持大小、修改时间排序、类型筛选和 Quick Look；阈值可在设置中调整。
+- **应用与重复文件**：查看应用占用、卸载关联残留；重复文件按内容分组，选定保留副本后审阅其它副本。
+- **开发者工具**：查找 Xcode、Android、Flutter、Node.js、Rust、Go、Python 等环境的构建产物与缓存，另有 Homebrew、端口清理和按生态组织的工作流。
+- **稍后处理与最近清理**：把候选加入待处理集合，统一审阅；从最近清理记录尝试恢复匹配的废纸篓项目。
 
-**做的**
+<img src="docs/screenshots/04-tree-zh-Hans.jpg" width="1100" alt="专业模式树形结果区：目录占用、文件数量、修改日期和行操作" />
 
-- 本地扫描磁盘占用、定位大文件、清卸载残留、识别启动项、检测重复文件、扫描开发者构建产物。
-- 一切删除走废纸篓；在废纸篓项目仍存在且身份未变化时可尝试恢复。
-- 可选 Sentinel 默认关闭；用户主动开启后以当前登录用户的非特权 Agent 在本机监听废纸篓和清理热点。当前版本会自动注销历史错误 root 注册，具体记录、迁移、注销与清除边界见 [PRIVACY.md](PRIVACY.md)。
-- 本地安全判定不依赖网络；App 主动 HTTP 只有 GitHub 更新检查（首次安装默认开启启动检查，
-  设置中可关闭）和用户主动启用/触发的 AI 请求。扫描网络卷、云端占位文件或使用 Quick Look
-  仍可能由 macOS/存储提供方产生网络读取。
-  AI 可能发送的路径上下文与元数据、默认脱敏和服务商边界以 [PRIVACY.md](PRIVACY.md) 为准。
+<sub>树形结果区：按目录比较占用。</sub>
 
-**不做的**
+<img src="docs/screenshots/05-large-files-zh-Hans.jpg" width="1100" alt="专业模式大文件结果区：文件类型筛选与大小列表" />
 
-- 网络流量监控、伪「内存释放」、伪「启动加速」、浏览器历史清理。
-- 订阅、遥测、广告、捆绑安装。
+<sub>大文件结果区：定位体积较大的文件。</sub>
 
-为什么不做？详见 [PITFALLS.md](PITFALLS.md) 和 [SECURITY.md](SECURITY.md)。
+**操作列**中的 ✨ 是 AI 辅助，托盘图标是“稍后处理”，废纸篓图标是回收入口。
+点击操作列表头的问号可查看当前界面提供的示例说明；窗口右上角问号可重新打开控件引导。
 
----
+<img src="docs/screenshots/06-row-actions-zh-Hans.jpg" width="640" alt="操作列示例说明：AI 辅助、稍后处理和移到废纸篓" />
 
-## 多语言
+> 图片更新于 2026-10-14，来自 v1.6.12 对应生产视图的离屏渲染。文件、候选容量为隔离示例；
+> 状态页为采集时本机只读读数。图片展示工作台或工具内页，不代表真实用户扫描结果、性能基准或运行交互验收。
+> [素材来源与复现方式](docs/screenshots/README.md)。
 
-支持 **简体中文** 与 **English**，跟随系统语言自动切换。也可以在系统设置里给单个 App 单独指定语言。
+## 确认与恢复
 
----
+扫描得到的占用不等于可清理容量。受限、未完成或未知的范围会保留提示。
 
-## 安装
+普通模式提供详细审阅；专业模式对普通项目使用简洁确认，对允许覆盖的风险直接进入严格确认，
+需要输入 `DELETE`。系统保护边界、越界路径及实际系统权限不能通过严格确认解除。
+完整成功使用短暂提示，失败、部分成功和未提交请求使用弹窗说明原因。
 
-<!-- v2026.10.14：公开安装包与私有源码仓库分开，所有下载入口固定到发行仓库。 -->
-官方安装包统一发布到 **[CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease)**。
-请从该仓库的 [最新 Release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest)
-下载 DMG 和对应 SHA256 校验文件；本源码仓库负责代码与开发文档。
-维护者上传、发布和验收流程见 [发布指南](docs/RELEASE.md#四发布到公开发行仓库)。
+文件清理通过系统废纸篓完成。最近清理记录仅在对应废纸篓对象仍存在且身份可验证时提供恢复；
+清空废纸篓后不保证恢复。Apple 工作流中的 Simulator Device / Runtime 属于明确标识的系统托管卸载，
+不能从废纸篓恢复。操作细节见 [使用指南](docs/USER_GUIDE.md)。
 
-最快路径：
+## 安装与更新
 
-1. 去 [Releases](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) 下载已发布的 `.dmg`。
-2. 拖入 Applications，首次启动按系统提示「仍要打开」。
-3. 如需完整扫描，在「系统设置 → 隐私与安全 → 完全磁盘访问」里允许 AmuxAIClean；拒绝后 App 仍可用，但会明确标记结果不完整。
+正式 DMG 支持 **macOS 13.5+、Apple Silicon / Intel**，提供 **简体中文 / English** 与浅色、深色外观。
 
-完整安装、TCC 授权、签名校验步骤见 [docs/INSTALL.md](docs/INSTALL.md)。
+1. 从 [官方最新 Release](https://github.com/CarGuo/AmuxAICleanRelease/releases/latest) 下载 DMG 和同版本 SHA256 文件。
+2. 校验后打开 DMG，把 AmuxAIClean 拖入 Applications，再启动应用。
+3. 按需要授予完全磁盘访问；受限范围仍会显示不完整提示。升级或重新授权后按系统提示重启并重新扫描。
 
-> 当前公开发布路径只来自维护者本地的 **Developer ID Application 签名 + 最终 DMG 公证**。当前发布和校验边界见 [docs/RELEASE.md](docs/RELEASE.md)。
+当前升级兼容下限为 **1.6.2**，不自动迁移 1.5.9、1.6.0、1.6.1 的旧配置、服务身份或撤销历史。
+应用内更新检查指向公开发行仓库 [CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease)。
+该仓库提供介绍、下载与反馈；本仓库保存源码和开发文档，访问源码需要相应仓库权限。
 
----
+[完整安装指南](docs/INSTALL.md) · [维护者发布流程](docs/RELEASE.md)
 
-## 质量与安全
+## 隐私与质量
 
-- **9 个第一方 SPM 包测试**：[ScanKit](Packages/ScanKit) / [SafetyKit](Packages/SafetyKit) / [AppUI](Packages/AppUI) / [HeuristicKit](Packages/HeuristicKit) / [LogKit](Packages/LogKit) / [BrewKit](Packages/BrewKit) / [FileSearchKit](Packages/FileSearchKit) / [AIKit](Packages/AIKit) / [TestHarness](Packages/TestHarness)；具体测试数以本次运行输出为准。
-- **三档安全引擎**：每条删除候选都过 `safe / confirm / forbid` 三色判定，规则在 [vendors.yaml](Resources/Rules/vendors.yaml) 公开可读。
-- **TCC 高敏目录硬 skip**：Mail / Messages / Calendars / Photos Library 等永远不进入扫描候选，从源头规避「删用户邮件」类事故。
-- **端到端集成测试钉契约**：[V12SafetyIntegrationTests](Packages/AppUI/Tests/AppUITests/V12SafetyIntegrationTests.swift) 把「不许删什么」写成断言。
-- **永不 `unlink(2)`**：所有删除路径都强制 `NSWorkspace.recycle()` 移废纸篓。
+本地安全判定不依赖 AI。AI 默认关闭，自行配置服务并主动请求后才发送上下文；
+更新检查首次安装默认开启，可在设置中关闭。网络卷、云端占位文件和 Quick Look 的系统读取边界见
+[隐私政策](PRIVACY.md)。可选 Sentinel 默认关闭，启用后运行当前用户的非特权本地 Agent。
 
-完整威胁模型见 [SECURITY.md](SECURITY.md)。
+九个 Swift 包覆盖扫描、安全、删除授权、历史存储及支撑能力。包测试、构建、真实交互和最终安装包
+验证分别记录，不把离屏图片当成功能验收。当前范围见 [产品状态](docs/CURRENT_STATE.md)，
+删除合同见 [DELETION_UX_CONTRACT.md](docs/DELETION_UX_CONTRACT.md)，安全边界见 [SECURITY.md](SECURITY.md)。
 
----
+## 开发与文档
 
-## 自己跑起来
-
-```bash
-git clone git@github.com:CarGuo/AmuxAIClean.git
-cd AmuxAIClean
-./Scripts/setup_dev.sh
-```
-
-> **fork 用户必读**：[AmuxAIClean.xcodeproj/project.pbxproj](AmuxAIClean.xcodeproj/project.pbxproj) 当前 Debug 走 `Automatic + Apple Development`，Release 走 `Manual + Developer ID Application: SentenceEnd Inc (W6H34N9728)`。第一次 build 必须改成你自己的 Team / signing 配置。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) "签名配置" 段。
+有源码访问权限的开发者可以使用已入仓的原生 Xcode 工程；开发工具链要求与用户安装下限分别说明。
 
 ```bash
 xcodebuild -project AmuxAIClean.xcodeproj -scheme AmuxAIClean -configuration Debug build
 ```
 
-完整开发环境、签名、调试技巧见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+[开发环境与测试](docs/DEVELOPMENT.md) · [贡献指南](CONTRIBUTING.md) ·
+[完整文档目录](docs/README.md) · [更新记录](CHANGELOG.md)
 
----
-
-## 路线图
-
-| 版本 | 主题 | 状态 |
-|---|---|---|
-| v1.0 | 整盘扫描 / 推荐清理 / 大文件 / 卸载残留 / SafetyEngine 三档 | 已发布 |
-| v1.1 | 应用占用 / 启动项 / TCCSkipList / 修改日期过滤 / 自动检查更新 | 已发布 |
-| v1.2 | 类型分桶 / Quick Look / 导出 / 重复文件检测（只读） | 已发布 |
-| v1.3 | 灵动岛 HUD / 状态栏托盘 / 设置面板重构 | 已发布 |
-| v1.4 | 开发者构建产物扫描（Android / Flutter / iOS / RN / 等 12+ 生态）| 已发布 |
-| v1.5 | 树视图增量化（O(N flat) prune patch + 原生 String 路径切分 + DirIndex 祖先对称减法 + store 错误日志化）| 已发布 |
-
-详见 [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md)。
-
----
-
-## 文档地图
-
-| 文档 | 内容 |
-|---|---|
-| [docs/INSTALL.md](docs/INSTALL.md) | 安装、Gatekeeper、TCC 完全磁盘访问授权 |
-| [docs/RELEASE.md](docs/RELEASE.md) | 维护者本地 Developer ID、最终 DMG 公证与 SHA256 校验 |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发环境、构建脚本、本地调试 |
-| [docs/DEV_ARTIFACTS_RULES.md](docs/DEV_ARTIFACTS_RULES.md) | 开发者构建产物扫描规则与拓展 |
-| [docs/FEATURE_GAP.md](docs/FEATURE_GAP.md) | 与同类产品 23 维 × 8 家竞品对比 |
-| [docs/ROADMAP_V1.md](docs/ROADMAP_V1.md) | 版本规划与每个里程碑的范围 |
-| [SECURITY.md](SECURITY.md) | 威胁模型、Hard Rules、漏洞上报 |
-| [PRIVACY.md](PRIVACY.md) | 联网字段、本地存储、权限、Sentinel 与清除顺序 |
-| [PITFALLS.md](PITFALLS.md) | 同类项目踩过的坑总览 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | PR 红线、commit 规范 |
-
----
-
-## 致谢
-
-- 感谢 [https://amux.ai/](https://amux.ai/) 中转平台赞助本项目的开发 Token 与 Apple 开发者账号。
-- 致谢同类开源项目 [Pearcleaner](https://github.com/alienator88/Pearcleaner) 在 TCC skip / vendor 规则维护上的实践参考。规则文件全部独立清洗，未引用任何竞品源码。
-
----
+历史竞品研究与旧版本计划保留原始基线，供追溯设计使用；当前功能以使用指南和产品状态为准。
 
 ## License
 
-[MIT](LICENSE) · Copyright (c) 2026 CarGuo
+[MIT](LICENSE) · Copyright © 2026 CarGuo

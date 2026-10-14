@@ -1,5 +1,8 @@
 # AmuxAIClean - v1.2 完整竞品对比文档（FEATURE_GAP）
 
+> **历史竞品研究：基线为 2026-05 的 v1.2，不代表当前产品或当前竞品能力。** 当前入口见[产品状态](CURRENT_STATE.md)与[使用指南](USER_GUIDE.md)。
+<!-- v2026.10.14：标明历史研究/计划边界，不改写当时结论或伪造最新竞品核验。 -->
+
 > 编写日期：2026-05-22
 > 版本基线：AmuxAIClean v1.2
 > 数据源：[docs/competitors/](file:///Users/amuxuser/workspace/AmuxAIClean/docs/competitors/) 7 份功能菜单深调（CleanMyMac.md / DaisyDisk.md / Pearcleaner.md / OmniDiskSweeper.md / AppCleaner.md / TreemapTools.md / OtherCleaners.md）合计 1774 行 / 843 条叶子，加上 v1.0–v1.2 实战踩坑记录

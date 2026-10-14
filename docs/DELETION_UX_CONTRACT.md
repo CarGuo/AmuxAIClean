@@ -530,16 +530,20 @@ fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单
 - C4/C5 真删只能使用预先创建的临时 fixture，禁止用真实 `$HOME` 数据制造证据。
 - 任何“统一确认已完成”“Professional 强制删除可用”的结论，至少需要相关矩阵行的 C4；最终 Release 结论还需要 C5。
 
-> **v2026.07.17 当前证据**：Duplicate 最终 rehash、同步提交边界、页面离开策略以及
+> **v2026.07.17 当时的证据**：Duplicate 最终 rehash、同步提交边界、页面离开策略以及
 > Uninstaller typed execution progress 已完成实现与静态审阅，但遵循“先完整落地、后统一测试”，
 > 新增测试、九包全测、Debug build 和真实 App 均未运行；这些新增边界当前仅为 C1，矩阵中的
 > C2/C3/C4 复选框保持未勾选。
 
-> **v2026.10.14 更新边界**：本文记录本轮代码的存储与交互合同；统一回归仍在进行，不能把文档
-> 更新当作测试全部通过或 C4/C5 验收。实际结果与未关闭项以
-> [删除阻断审查](DELETION_BLOCKER_AUDIT_2026-10-14.md)和质量台账为准。
+> **v2026.10.14 交付边界**：v1.6.12 已完成九包测试、Debug/Release 构建、临时真实回收与撤销、
+> 有限的一次持续 Debug 交互，以及最终 DMG 签名、公证和公开下载核对。逐入口矩阵仍不能用共享
+> 底层测试或文档截图补勾；完整 Release 运行交互、macOS 13.5/Intel 实机尚未全覆盖。详情见
+> [当前产品状态](CURRENT_STATE.md)、[删除阻断审查](DELETION_BLOCKER_AUDIT_2026-10-14.md)和质量台账。
 
-## 10. 当前已确认的违规点
+## 10. 初始违规清单（历史）
+
+以下保留统一确认改造前的审查问题，用于追溯合同来源；不是 v1.6.12 的当前缺陷列表。
+当前实现与未关闭项以本节上方的交付边界及删除阻断审查为准。
 
 - `OperationResultSheet.init(onForceDelete:)` 静默丢弃回调；
 - `TrashActionCoordinator.Mode.force` 与 normal 等价；

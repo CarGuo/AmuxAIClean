@@ -1,6 +1,6 @@
 # AmuxAIClean 开发文档
 
-面向想自己改 / 编 / 跑测试 / 贡献代码的人。用户向的安装看 [INSTALL.md](INSTALL.md)。
+面向具有源码仓库访问权限的维护者与贡献者。用户操作看 [USER_GUIDE.md](USER_GUIDE.md)，安装看 [INSTALL.md](INSTALL.md)。
 
 ---
 
@@ -11,7 +11,7 @@
 - 工程描述：原生 Xcode 工程 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj)（直接入仓，无 xcodegen / project.yml）
 - 9 个独立 SwiftPM 包（AIKit / AppUI / BrewKit / FileSearchKit / HeuristicKit / LogKit / SafetyKit / ScanKit / TestHarness）+ 主 App，作为 Local SPM 在 Xcode UI 的 Package Dependencies 区域引用
 - 删除走 [TrashPipeline](../Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 直接调 `NSWorkspace.recycle`，无特权进程
-- GitHub Actions 配置当前只保留手动入口，CI 与 Release job 都以 `if: false` 显式停用；提交质量证据来自本地 9 包测试和目标 Xcode 构建
+- 当前仓库没有 `.github` 工作流；测试、构建和公开发布按本地合同执行。
 
 ---
 
@@ -77,16 +77,11 @@ Debug 签名由 [AmuxAIClean.xcodeproj](../AmuxAIClean.xcodeproj) 里的 `CODE_S
 
 ---
 
-## Release 打包 + DMG
+## Release 打包与公开发布
 
-```bash
-./Scripts/build_release.sh --no-notarize
-AMUX_CLEAN_NOTARY_KEYCHAIN_PROFILE=amux-notary ./Scripts/build_release.sh --notarize
-```
-
-[Scripts/build_release.sh](../Scripts/build_release.sh) 走 `xcodebuild -configuration Release`。Release 签名由 [project.pbxproj](../AmuxAIClean.xcodeproj/project.pbxproj) 里的 Manual + Developer ID Application 配置决定；`--notarize` 会额外执行 Apple Notary、staple 与 Gatekeeper 校验。
-未传 `VERSION` 时脚本使用工程当前 `MARKETING_VERSION`；只有明确制作另一个版本候选时才传入
-`VERSION=x.y.z`，避免文档示例固化并回写过期版本。
+唯一版本化操作入口是 [RELEASE.md](RELEASE.md)：Developer ID 构建、最终 DMG 公证、签名校验、
+源码 tag、公开仓库上传与匿名下载验收均按该文档执行。公开安装包位于
+[CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease/releases)，与源码仓库分开。
 
 ---
 
@@ -119,7 +114,7 @@ done
 
 | 包 | 关键覆盖 |
 |---|---|
-| AppUI | UninstallStore / AppUninstaller / OrphanScanner / TreeBrowserSort / LargeFiles / ScanCoordinatorFullDisk / TCCProbe / HeuristicRecorder / DevArtifacts UI / PortCleaner / TrashPipeline dry-run |
+| AppUI | 普通工作台 / Tree 与大文件投影 / 扫描终态 / 统一确认与回执 / SQLite 历史与迁移 / 恢复所有权 / 应用卸载 / 工作流 / AI / 本地化 |
 | SafetyKit | 三色判定 / hardForbid / firmlink 镜像 / VendorTrie / RuleLoader / vendor 自检 / CommonAppCache 规则 |
 | ScanKit | 隐藏文件 / inode 去重 / 引擎一致性 / golden 快照 / DevArtifacts 规则 / 多 worker 并发 / DerivedData per-project / SimCtl / NodeModules |
 | HeuristicKit | 评分公式 / forbid 红线 / JSON round-trip |
@@ -129,7 +124,7 @@ done
 | AIKit | AISettings / OpenAIChatClient / PathRedactor / PromptBuilder |
 | TestHarness | FixtureFS / ScenarioBuilder / GoldenSnapshot |
 
-> 具体测试数以本地 / CI 实际 `swift test` 输出为准；本表只列覆盖面，避免因新增用例后过时。
+> 具体测试数以本地实际 `swift test` 输出为准；本表只列覆盖面，避免因新增用例后过时。
 
 ### CI 与本地的性能 budget 差异
 
@@ -161,7 +156,6 @@ candidate forest 全链路；三者不能互相替代。
 ```
 AmuxAIClean/
 ├─ App/                          # SwiftUI 入口（@main + 加载 vendors.yaml + 注入 MainView/UninstallScreen）
-├─ Helper/                       # 特权 Helper（v1 不部署，留给 v2 Premium）
 ├─ Packages/
 │  ├─ ScanKit/                   # 扫描引擎 + bench CLI
 │  ├─ SafetyKit/                 # 安全评分 + 规则引擎（零外部依赖）
@@ -174,7 +168,7 @@ AmuxAIClean/
 │  └─ TestHarness/               # 测试基础设施
 ├─ Resources/
 │  └─ Rules/
-│     ├─ vendors.yaml            # 36 条已清洗 vendor 规则（v1.0）
+│     ├─ vendors.yaml            # 厂商路径与 Bundle ID 规则；以当前文件为准
 │     ├─ vendor_shared.yaml      # 共享厂商目录白名单
 │     └─ safe_paths.yaml         # 已知安全前缀
 ├─ Scripts/
@@ -187,18 +181,19 @@ AmuxAIClean/
 │  ├─ make_icns.sh               # 生成 .icns
 │  └─ bench.sh                   # ScanKit vs du 对比
 ├─ Tools/
+│  ├─ CoordinatorBench/          # 生产协调器性能基准 CLI
 │  ├─ PerfBench/                 # 性能基准 CLI
 │  └─ SeedingTool/               # vendor 规则自动生成 CLI（一次性）
 ├─ docs/
 │  ├─ INSTALL.md                 # 用户安装与 TCC 授权步骤
 │  ├─ DEVELOPMENT.md             # 本文件
-│  ├─ ROADMAP_V1.md              # v1.0 范围与验收清单
-│  ├─ FEATURE_GAP.md             # 与 CleanMyMac/AppCleaner/Pearcleaner/DaisyDisk 等差距分析
+│  ├─ USER_GUIDE.md              # 当前用户操作（另有 English）
+│  ├─ CURRENT_STATE.md           # 当前实现与验证范围
+│  ├─ screenshots/              # 当前中英文视图素材及来源
+│  ├─ ROADMAP_V1.md              # 历史范围与验收计划
+│  ├─ FEATURE_GAP.md             # v1.2 历史竞品研究
 │  ├─ COMPETITORS.md             # 竞品总览
 │  └─ competitors/               # 单家竞品分析
-├─ .github/workflows/
-│  ├─ ci.yml                     # 仅保留 workflow_dispatch；全部 job 当前 if: false
-│  └─ release.yml                # 仅保留 workflow_dispatch；release job 当前 if: false
 ├─ AmuxAIClean.xcodeproj/        # 原生 Xcode 工程（v1.5.x 后入仓，xcuserdata 仍 ignore）
 ├─ PITFALLS.md                   # 避坑手册（开工必读）
 ├─ SECURITY.md                   # 安全模型与威胁模型说明
@@ -209,27 +204,29 @@ AmuxAIClean/
 
 ---
 
-## CI / Release 工作流
+## 截图维护
 
-<!-- v2026.07.18：按 workflow 的真实触发器和 job 条件重写，禁止把停用配置描述成可执行发布链。 -->
+<!-- v2026.10.14：截图改为生产视图的离屏采集，移除 AppleScript 猜位置和全桌面截图流程。 -->
 
-### CI（[.github/workflows/ci.yml](../.github/workflows/ci.yml)）
+```bash
+./Scripts/screenshots.sh
+./Scripts/screenshots.sh --output-dir build/documentation-capture/images
+```
 
-- 仅声明 `workflow_dispatch`；push / pull request 不触发。
-- `swift-test` 和 `xcode-build` 两个 job 当前都为 `if: false`，手动 Run workflow 也不会分配 runner 或产生测试结果。
-- 因此 GitHub 上没有可称为“CI 绿”的自动证据。提交前必须按根目录 [AGENTS.md](../AGENTS.md) 在本地跑对应包测试；跨主链路改动跑全部 9 包，再做目标 Debug 构建。
+命令只运行显式开启的 `DocumentationScreenshotTests`，生成中英文六种场景；不启动 App、
+不扫描真实 HOME、不移动文件、不发 AI 请求。空间分析使用临时文件，清理/专业结果使用示例指标；
+状态卡片是采集时本机只读读数。Retina JPEG 用于网页展示；图片不是 C4/C5 验收。
+生成后逐张检查文字、背景、裁切、路径和中英文差异，更新素材 manifest，再同步公开仓库。
+详细数据边界、文件表及复现信息见 [screenshots/README.md](screenshots/README.md)。
 
-### Release（[.github/workflows/release.yml](../.github/workflows/release.yml)）
+## 测试与发布责任
 
-- 仅声明 `workflow_dispatch`，但 `release-disabled` job 当前为 `if: false`。
-- push tag 不触发；手动 dispatch 也不会构建、上传 artifact 或创建 GitHub Release。
-- 当前有效发布路径是维护者本地 Developer ID 构建和最终 DMG-only Notary 链路。
+当前 checkout 没有 `.github` 工作流，不存在自动 CI 或 push tag 自动发版链路。
+本地测试和目标构建遵循 [AGENTS.md](../AGENTS.md) 的改动范围门槛；不能把静态审阅、离屏采集
+或网页展示当作真实交互证据。真实 App 启动仍需按项目要求写清持续验收场景并取得用户同意。
 
-### 发版步骤
-
-版本、签名、公证、staple、Gatekeeper、最终 SHA256 及 tag 顺序只以
-[RELEASE.md](RELEASE.md) 为准，本开发文档不复制易漂移的命令。构建本地 Release/DMG 不等于已上传
-GitHub；commit、tag、push 和创建 Release 是分别授权的外部操作。
+正式发布、两个仓库的职责与已批准 DMG 的复用按 [RELEASE.md](RELEASE.md) 执行。
+文档或图片更新不要求重打包，也不能移动已发布的源码 tag。
 
 ---
 

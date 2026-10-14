@@ -8,6 +8,25 @@
 
 ## [Unreleased]
 
+### Documentation — 2026-10-14
+- 按现行普通工作台和专业模式重写中英文首页与使用指南，补充当前状态和文档导航。
+- 替换早期图库，使用当前生产视图和隔离示例生成中英文素材；操作示例和证据边界明确标注。
+- 使用用户提供的 Amux Logo 更新赞助展示，并保留品牌素材来源；修正过期安装、测试和 CI 说明。
+
+## [1.6.12] - 2026-10-14
+
+### Fixed
+- 修复历史校验误判、已完成请求仍占用恢复状态以及大批量记录落盘失败造成的后续删除阻断；当前品牌旧历史迁移到 SQLite 存储。
+- 分别传递扫描不完整与真实删除权限；专业可覆盖风险重新验证并进入严格确认。
+- 修复卸载无关发现失败阻断完整选中项目、Tree 测量完成后选中项目操作仍禁用，以及已知废纸篓对象恢复被额外目录读取权限阻断。
+- 只有完整成功使用短暂提示，失败/部分成功/未提交使用说明弹窗；操作列提供示例帮助。
+- 应用内更新和下载指向公开发行仓库 `CarGuo/AmuxAICleanRelease`。
+
+### Distribution
+- 1.6.12（236）为 macOS 13.5+、Apple Silicon/Intel 通用 Developer ID 公证 DMG。
+- 支持从 1.6.2 及以后升级；更早版本不自动迁移配置、服务身份和撤销历史。
+- 九包测试、目标构建、临时真实回收与撤销、有限 Debug 交互及最终 DMG 核对通过；完整 Release 运行交互和 macOS 13.5/Intel 实机尚未全覆盖。详情以[发行说明](https://github.com/CarGuo/AmuxAICleanRelease/releases/tag/v1.6.12)为准。
+
 ## [1.6.2] - 2026-07-20
 
 ### Fixed
@@ -147,7 +166,8 @@
 
 ---
 
-[Unreleased]: https://github.com/CarGuo/AmuxAIClean/compare/v1.6.2...HEAD
+[Unreleased]: https://github.com/CarGuo/AmuxAIClean/compare/v1.6.12...HEAD
+[1.6.12]: https://github.com/CarGuo/AmuxAICleanRelease/releases/tag/v1.6.12
 [1.6.2]: https://github.com/CarGuo/AmuxAIClean/compare/v1.6.1...v1.6.2
 [1.5.6]: https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.5.6
 [1.5.0]: https://github.com/CarGuo/AmuxAIClean/releases/tag/v1.5.0

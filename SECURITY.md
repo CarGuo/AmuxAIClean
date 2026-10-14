@@ -5,13 +5,13 @@
 
 ---
 
-## 重要：v1.3.zzzz 路线 B 删除链路简化（2026-05-25 更新）
+<!-- v2026.10.14：移除已退役 Helper/XPC 的当前链路描述与失效链接；
+候选、授权和执行三道闸门与产品实际实现、删除合同一致。 -->
 
-原"App ↔ 特权删除 Helper" XPC 三道闸门设计已整段下线（[Helper/](Helper) / [Packages/XPCBridge/](Packages/XPCBridge) / [HelperClient.swift](Packages/AppUI/Sources/AppUI/HelperClient.swift) / [HelperDecision.swift](Packages/SafetyKit/Sources/SafetyKit/HelperDecision.swift)）。本产品只删 `$HOME` 下用户态文件，不需要 root；删除链路收敛为唯一一份 [TrashPipeline](Packages/AppUI/Sources/AppUI/TrashPipeline.swift)。可选 Sentinel 是默认关闭、只读发现用的非特权 Login Agent，不参与删除授权或执行。
-
-**安全原则保留**："永远不 unlink / dryRun 执行层默认安全 / SafetyEngine 三色判定 / 批级原子拒绝"仍由主 App 进程内 SafetyEngine + TrashPipeline 双层闸门保证；当前 Release 交互和专业覆盖边界以下文现行章节为准，不再沿用历史 Helper UI。
-
-下文若提到 Helper / XPC / HMAC 签名等内容均为**历史档案**。
+现行文件清理只处理 `$HOME` 下允许的用户态候选，以当前用户身份调用
+[TrashPipeline](Packages/AppUI/Sources/AppUI/TrashPipeline.swift) → `NSWorkspace.recycle`。
+完整入口与验证范围见[产品状态](docs/CURRENT_STATE.md)；历史 Helper/XPC 设计已退役。
+可选 Sentinel 默认关闭，只在当前用户域做本地发现，不参与删除授权或执行。
 
 ---
 
@@ -50,31 +50,30 @@
 
 ## 3. 删除链路：三道闸门
 
-### 闸门一：连接级（Connection-Level）
+### 候选级
 
-- Helper（v1 不启用，留 v2）走 `NSXPCListener`，`mach service` 名字写死 `com.amux.ai.Clean.helper`
-- 主 App 用 `audit_token_t` + `SecCodeCopyGuestWithAttributes` 验证 connecting peer 的签名
-- 任何不带预期 Team ID / bundle ID 的连接立即 invalidate
+[SafetyEngine](Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 校验原路径、解析后的身份、
+HOME/系统边界、hard-forbid 与厂商规则，产生独立的 verdict/rejection。
+扫描完整性、TCC 和实际文件权限分别保留类型化来源，不能把扫描缺口直接改成永久禁止或权限拒绝。
+卸载、重复文件、工作流等候选均不能跳过同一安全边界。
 
-### 闸门二：消息级（Message-Level）
+### 授权级
 
-- 每条 [DeletionToken](Packages/XPCBridge/Sources/XPCBridge/DeletionToken.swift) 都带 HMAC（key 来自 Keychain）
-- Helper 启动读环境变量 `AMUXCLEAN_ALLOW_REAL_DELETE`，缺省永远走 dryRun（即使收到合法 token）
-- TamperedDryRun 测试见 [XPCBridgeTests](Packages/XPCBridge/Tests/XPCBridgeTests)
+[TrashActionCoordinator](Packages/AppUI/Sources/AppUI/TrashActionCoordinator.swift) 消费精确
+`DeletionIntent` 和确认计划。授权冻结路径集、扫描 session/revision、风险 reason、运行中应用
+决定与用户选择；普通审阅或专业严格确认只改变呈现方式，不授予任意 force 能力。
+取消、关闭或预检拒绝不能生成系统提交回执，也不能构造成功结果。
 
-### 闸门三：语义级（Semantic-Level）
+### 执行级
 
-- [SafetyEngine](Packages/SafetyKit/Sources/SafetyKit/SafetyEngine.swift) 三色判定流程：
+[TrashPipeline](Packages/AppUI/Sources/AppUI/TrashPipeline.swift) 在耐久 reservation 与系统调用边界
+重新检查身份、范围、安全、权限、重复文件内容/保留副本及对应授权。跨进程 owner/attempt
+和阶段防止重复提交；历史持久化不可用时不调用系统回收。
+真正提交后以系统回执确认已移动项，再同步历史与页面。未知结果保留待核对状态，不伪报失败或成功。
 
-  1. resolveSymlinks 取真实路径
-  2. 命中 hardForbid 黑名单 -> `forbid`（黑名单写死在代码里，不可配置）
-     - `/`、`/System`、`/usr`、`/bin`、`/sbin`、`/Library/Apple`、`~`、`~/Library`、`~/Documents`
-  3. 命中 safeCachePrefixes 显式白名单 -> `safe`
-     - `~/Library/Caches/<bundleID>`、`~/Library/Application Support/<bundleID>` 等已知 sandbox 容器
-  4. 命中 VendorTrie 路径前缀（vendors.yaml 展开后）-> `forbid / vendorPathRule`；普通模式拒绝，专业模式只能通过类型化严格覆盖请求尝试
-  5. 默认 `confirm`，UI 必须用户勾选才会进 deletion 队列
-- 卸载残留路 [AppUninstaller](Packages/AppUI/Sources/AppUI/AppUninstaller.swift) 候选必须再过一次 SafetyEngine
-- Orphan 反扫 [OrphanScanner](Packages/AppUI/Sources/AppUI/OrphanScanner.swift) 多一道 mtime ≥ 30 天 + bundleID 注销 + appName 不在装机列表
+文件清理只调用 `NSWorkspace.recycle`。Simulator Device / Runtime 是封闭类型的系统托管卸载
+例外，必须明确标识不可从废纸篓恢复，不能扩展成任意命令或文件删除通道。
+具体合同见 [DELETION_UX_CONTRACT.md](docs/DELETION_UX_CONTRACT.md)。
 
 ### 专业模式覆盖边界
 
@@ -202,7 +201,7 @@ App 不读取剪贴板或通讯录，也不解析浏览器历史数据库中的�
 ## 5. v1 已知不防的攻击面（透明）
 
 - 当前正式候选使用 Developer ID 签名，并只提交最终 DMG 公证；Notary、staple、Gatekeeper 与 SHA256 能证明来源和字节完整性，但不能证明业务逻辑没有缺陷
-- 本地构建/公证与上传 GitHub 是两个独立授权边界；安全文档不得假设 GitHub Releases 是唯一或默认分发渠道
+- 官方安装包与默认更新源为 [CarGuo/AmuxAICleanRelease](https://github.com/CarGuo/AmuxAICleanRelease/releases)；本地构建/公证与公开上传是独立操作，本地成功不会自动发布
 - v1 不启用特权删除 Helper -> 受 TCC 限制读不到的目录扫不到，这是预期；不会通过任何"曲线救国"绕过 TCC
 - vendors.yaml 在 bundle 内只读，但用户如果自己 mod app 资源后果自负
 
@@ -228,7 +227,7 @@ App 不读取剪贴板或通讯录，也不解析浏览器历史数据库中的�
 1. 没引入 `unlink` / `removeItem(at:)` 删除候选路径
 2. 新增删除请求在执行层默认走 dryRun；Release UI 不显示 dry-run/仅预览开关
 3. 新加规则跑 RuleLoader 反向校验过 hardForbid
-4. 新加候选源（如 v2 增加 LaunchAgents 扫描）必须再过 SafetyEngine
+4. 新加候选源必须进入统一删除意图与 SafetyEngine，不能另建删除通道
 5. 测试不允许通过减少断言来"修绿"
 6. UI 上"危险操作"按钮必须用 `.destructive` role + 二次确认 sheet
 7. 不允许 `try?` 静默吞错（错误必须 log 或上抛）
