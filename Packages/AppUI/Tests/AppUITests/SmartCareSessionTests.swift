@@ -237,7 +237,15 @@ final class SmartCareSessionTests: XCTestCase {
         XCTAssertEqual(session.scanLimitationProjection.totalCount, 1)
         XCTAssertEqual(session.scanLimitationProjection.displayedPaths, [cache.standardizedFileURL.path])
         XCTAssertEqual(session.care.summary.items.map(\.path), [cache.standardizedFileURL.path])
-        XCTAssertEqual(session.care.summary.items.first?.verdict, .forbid)
+        // v2026.10.14: incomplete coverage must not overwrite SafetyEngine policy. Normal
+        // still cannot select or count this item; Professional needs the independent evidence
+        // to reach target revalidation instead of inheriting a fabricated permanent forbid.
+        let item = try XCTUnwrap(session.care.summary.items.first)
+        XCTAssertEqual(item.verdict, .safe)
+        XCTAssertFalse(item.scanIncompleteReasons.isEmpty)
+        XCTAssertFalse(item.isSelectable)
+        XCTAssertFalse(item.isDefaultSelected)
+        XCTAssertEqual(session.care.summary.safeItems.count, 0)
 
         let partition = TrashPipeline.partitionByForbid(
             paths: [cache.path],

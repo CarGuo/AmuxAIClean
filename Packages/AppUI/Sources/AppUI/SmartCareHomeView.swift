@@ -171,6 +171,9 @@ enum SmartCarePresentation {
     }
 
     static func defaultRiskKey(for item: SmartCareItem) -> String? {
+        if !item.scanIncompleteReasons.isEmpty {
+            return "smart_care.risk.scan_incomplete"
+        }
         if item.verdict == .forbid {
             return "smart_care.risk.protected"
         }

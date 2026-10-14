@@ -2673,15 +2673,23 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             let terminalUnmoved = settlement.normalizedPaths.filter {
                 !durableMovedPaths.contains($0)
             }
-            if !terminalUnmoved.isEmpty,
-               !ledger.finish(
-                   paths: terminalUnmoved,
-                   operationID: settlement.operationID,
-                   attemptID: settlement.attemptID
-               ) {
-                AmuxLog.error(
-                    .trash,
-                    "Trash pending ledger late unmoved clear failed operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
+            if !terminalUnmoved.isEmpty {
+                if !ledger.finish(
+                    paths: terminalUnmoved,
+                    operationID: settlement.operationID,
+                    attemptID: settlement.attemptID
+                ) {
+                    AmuxLog.error(
+                        .trash,
+                        "Trash pending ledger late unmoved clear failed operationID=\(settlement.operationID.uuidString) attemptID=\(settlement.attemptID.uuidString)"
+                    )
+                }
+                // v2026.10.14: the late callback is terminal even when clearing its record
+                // failed. Release only these paths; moved siblings still own their Undo commit.
+                ledger.releaseCompletedAttempt(
+                    paths: terminalUnmoved,
+                    operationID: settlement.operationID,
+                    attemptID: settlement.attemptID
                 )
             }
             if let completionJournal, !settlement.acceptedJournalEntries.isEmpty {
@@ -2754,23 +2762,10 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
         // recreate the cross-domain corruption fixed in v2026.07.18.
         guard let undoHistoryStore else { return }
         Task { @MainActor in
-            let persisted = await undoHistoryStore.addJournalEntriesDurably(
-                source: "NSWorkspace",
-                entries: entries
-            )
-            guard persisted else {
+            guard await capability.persistAndFinish(source: "NSWorkspace", in: undoHistoryStore) else {
                 AmuxLog.error(
                     .trash,
-                    "Late Trash Undo durable commit remains pending operationID=\(operationID.uuidString) entries=\(entries.count)"
-                )
-                return
-            }
-            guard await capability.finishDurablyAfterUndoPersisted(
-                pruningReceiptsIn: undoHistoryStore
-            ) else {
-                AmuxLog.error(
-                    .trash,
-                    "Late Trash Undo acknowledgement remains pending operationID=\(operationID.uuidString) entries=\(entries.count)"
+                    "Late Trash Undo handed to recovery operationID=\(operationID.uuidString) entries=\(entries.count)"
                 )
                 return
             }
@@ -2795,6 +2790,17 @@ public final class TrashPipeline: DeletionPipeline, @unchecked Sendable {
             return .blocked
         }
         defer { recoveryLease.release() }
+
+        // v2026.10.14: even an empty callback journal requires a real history prepare commit.
+        // Detect corrupt/read-only/unwritable storage before AppKit moves any selected object.
+        guard await undoHistoryStore.prepareForDeletion() else {
+            await undoHistoryStore.finishCompletionJournalRecovery(
+                token: healthToken,
+                blockedAttempts: nil,
+                reachedSuccessfulEmptyTerminal: false
+            )
+            return .blocked
+        }
 
         let replay = await reconcileDurableUndoJournal(
             journal: journal,

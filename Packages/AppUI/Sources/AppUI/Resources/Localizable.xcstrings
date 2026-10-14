@@ -17369,19 +17369,36 @@
         }
       }
     },
+    "uninstall.discovery.blocked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current app review is no longer valid (%lld issues). Rescan this app before moving related files to Trash."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前应用复核已失效（%lld 处问题）。请重新扫描此应用，再将关联文件移到废纸篓。"
+          }
+        }
+      }
+    },
     "uninstall.discovery.partial": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Related-file discovery is incomplete in %lld places. Results are a lower bound, and deletion is disabled until a complete rescan."
+            "value": "Related-file discovery is incomplete in %lld places. Results are a lower bound; items with complete scans and verified identities can still be reviewed for deletion."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "关联文件发现有 %lld 处未完成；当前结果仅为下界，完整重扫前不会开放删除。"
+            "value": "关联文件发现有 %lld 处未完成，当前结果仅为下界；扫描完整且身份已确认的项目仍可勾选并审阅删除。"
           }
         }
       }
@@ -20198,6 +20215,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "已被安全规则保护，永远不会进入清理队列。"
+          }
+        }
+      }
+    },
+    "smart_care.risk.scan_incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan incomplete. Rescan, or switch to Professional mode for a strict target review."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描未完整。请重新扫描，或切换专业模式对目标进行严格复核。"
           }
         }
       }

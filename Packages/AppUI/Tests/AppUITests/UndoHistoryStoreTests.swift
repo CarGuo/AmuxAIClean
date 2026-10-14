@@ -5,6 +5,11 @@ import XCTest
 
 /// Step 7-5：UndoHistoryStore 单测。
 ///
+/// v2026.10.14: the public initializer now writes SQLite. Tests that deliberately create
+/// schema-4 JSON/WAL, mutate that JSON, or exercise the old migration transaction must
+/// explicitly choose `.legacyJSON` for their fixture writers/readers; a `.json` filename
+/// is not a format request. Ordinary persistence/restore/concurrency tests keep SQLite.
+///
 /// 覆盖：
 /// 1. addRecord 头插 + LRU + 持久化到磁盘
 /// 2. loadHistory 跨实例读取（验 Codable + flock/WAL 持久化合同）
@@ -786,7 +791,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
-        let legacyStore = UndoHistoryStore(storeURL: legacyURL)
+        let legacyStore = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacyStore.addRecord(source: "legacy", filePairs: [
             .init(original: "/original", trashed: "/trash")
         ])
@@ -802,12 +807,12 @@ final class UndoHistoryStoreTests: XCTestCase {
             "safe-copy intentionally retains legacy because Darwin has no identity-bound unlink"
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: destinationURL.path))
-        XCTAssertEqual(UndoHistoryStore(storeURL: destinationURL).history.first?.source, "legacy")
-        XCTAssertEqual(UndoHistoryStore(storeURL: legacyURL).history.first?.source, "legacy")
+        XCTAssertEqual(UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).history.first?.source, "legacy")
+        XCTAssertEqual(UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON).history.first?.source, "legacy")
 
         // 新路径已有数据时，旧文件的新 UUID 必须做单调 union；不能以任何一边整体覆盖另一边。
         let secondLegacyURL = dir.appendingPathComponent("LegacyStore/second.json")
-        let secondLegacy = UndoHistoryStore(storeURL: secondLegacyURL)
+        let secondLegacy = UndoHistoryStore(storeURL: secondLegacyURL, persistenceFormat: .legacyJSON)
         secondLegacy.addRecord(source: "must-not-overwrite", filePairs: [
             .init(original: "/other-original", trashed: "/other-trash")
         ])
@@ -818,7 +823,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(secondOutcome, .migrated)
         XCTAssertTrue(FileManager.default.fileExists(atPath: secondLegacyURL.path))
         XCTAssertEqual(
-            Set(UndoHistoryStore(storeURL: destinationURL).history.map(\.source)),
+            Set(UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).history.map(\.source)),
             Set(["legacy", "must-not-overwrite"])
         )
     }
@@ -827,7 +832,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
-        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacy.addRecord(source: "legacy-visible-once", filePairs: [
             .init(original: "/original", trashed: "/trash")
         ])
@@ -860,7 +865,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             ),
             .notNeeded
         )
-        XCTAssertTrue(UndoHistoryStore(storeURL: destinationURL).history.isEmpty)
+        XCTAssertTrue(UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).history.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path))
     }
 
@@ -901,7 +906,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             restoreScopeRoot: dir.path,
             recordedAt: Date(timeIntervalSince1970: 200)
         )
-        let legacy = UndoHistoryStore(storeURL: legacyURL, allowedRestoreRoots: [dir.path])
+        let legacy = UndoHistoryStore(storeURL: legacyURL, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         let firstPersisted = await legacy.addJournalEntriesDurably(
             source: "legacy-first",
             entries: [firstReceipt]
@@ -915,7 +920,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             .migrated
         )
 
-        let current = UndoHistoryStore(storeURL: destinationURL)
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         let acknowledged = await current.acknowledgeCompletionJournal(ids: [firstReceipt.id])
         XCTAssertTrue(acknowledged)
         XCTAssertEqual(
@@ -982,7 +987,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
         let first = try entry(named: "first", trashed: firstTrash)
         let second = try entry(named: "second", trashed: secondTrash)
-        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
 
         let firstPersisted = await store.addJournalEntriesDurably(
             source: "first",
@@ -997,7 +1002,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         )
         XCTAssertTrue(secondPersisted)
 
-        let reloaded = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let reloaded = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         XCTAssertEqual(reloaded.storageState, .ready)
         XCTAssertEqual(reloaded.history.count, 2)
         let object = try XCTUnwrap(
@@ -1034,7 +1039,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
     func testIdleWALMetadataChangePreservesHistoryAndAllowsNextDurableWrite() throws {
         let url = storeURL(in: tempDir())
-        let seed = UndoHistoryStore(storeURL: url)
+        let seed = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         for index in 0..<3 {
             seed.addRecord(source: "before-\(index)", filePairs: [
                 .init(original: "/original/\(index)", trashed: "/trash/\(index)")
@@ -1042,22 +1047,130 @@ final class UndoHistoryStoreTests: XCTestCase {
             seed.saveHistorySync()
         }
         try changeWALMetadata(nextTo: url)
-        let recovered = UndoHistoryStore(storeURL: url)
+        let recovered = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(recovered.storageState, .ready)
         XCTAssertEqual(recovered.history.count, 3)
         recovered.addRecord(source: "after-metadata-change", filePairs: [
             .init(original: "/original/after", trashed: "/trash/after")
         ])
         recovered.saveHistorySync()
-        let reloaded = UndoHistoryStore(storeURL: url)
+        let reloaded = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(reloaded.storageState, .ready)
         XCTAssertEqual(reloaded.history.count, 4)
         XCTAssertEqual(reloaded.history.first?.source, "after-metadata-change")
     }
 
+    // v2026.10.14: the notarized build opened canonical for writing after freezing its stat.
+    // macOS provenance/other xattrs can then change ctime without changing the Undo bytes.
+    // This is a commit-boundary regression, not just a restart/recovery regression.
+    func testCanonicalMetadataChangeAtCommitPreservesHistoryAndNextWrite() throws {
+        let dir = tempDir()
+        let legacyURL = dir.appendingPathComponent("incoming/UndoHistory.json")
+        let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
+        let incoming = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
+        incoming.addRecord(source: "incoming", filePairs: [
+            .init(original: "/incoming", trashed: "/trash/incoming")
+        ])
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
+        current.addRecord(source: "current", filePairs: [
+            .init(original: "/current", trashed: "/trash/current")
+        ])
+        let outcome = UndoHistoryStore.migrateLegacyStoreIfNeeded(
+            from: legacyURL,
+            to: destinationURL,
+            beforeDestinationCommitHookForTesting: {
+                let value = Data(UUID().uuidString.utf8)
+                XCTAssertEqual(value.withUnsafeBytes {
+                    setxattr(destinationURL.path, "com.amux.test.write-open", $0.baseAddress,
+                             $0.count, 0, XATTR_NOFOLLOW)
+                }, 0)
+            }
+        )
+        XCTAssertEqual(outcome, .migrated)
+        let recovered = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
+        XCTAssertEqual(recovered.storageState, .ready)
+        XCTAssertEqual(Set(recovered.history.map(\.source)), ["current", "incoming"])
+        recovered.addRecord(source: "next", filePairs: [
+            .init(original: "/next", trashed: "/trash/next")
+        ])
+        recovered.saveHistorySync()
+        let reloaded = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
+        XCTAssertEqual(reloaded.storageState, .ready)
+        XCTAssertEqual(Set(reloaded.history.map(\.source)), ["current", "incoming", "next"])
+    }
+
+    func testWriteOpenMetadataChangeUsesVerifiedDescriptorsForBothWALSlotsAndCanonical() throws {
+        let dir = tempDir()
+        let incomingURL = dir.appendingPathComponent("incoming/UndoHistory.json")
+        let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
+        let incoming = UndoHistoryStore(storeURL: incomingURL, persistenceFormat: .legacyJSON)
+        incoming.addRecord(source: "incoming", filePairs: [.init(original: "/i", trashed: "/trash/i")])
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
+        for index in 0..<2 {
+            current.addRecord(source: "current-\(index)", filePairs: [
+                .init(original: "/\(index)", trashed: "/trash/\(index)")
+            ])
+        }
+        let events = LockedEventSet()
+        let outcome = UndoHistoryStore.migrateLegacyStoreIfNeeded(
+            from: incomingURL, to: destinationURL,
+            afterWriteOpenHookForTesting: { name, descriptor in
+                // Runs after O_RDWR and before fstat, matching provenance's mutation boundary.
+                let value = Data(UUID().uuidString.utf8)
+                XCTAssertEqual(value.withUnsafeBytes {
+                    fsetxattr(descriptor, "com.amux.test.write-open", $0.baseAddress, $0.count, 0, 0)
+                }, 0)
+                events.insert(name)
+            },
+            commitIODiagnosticHookForTesting: { io in
+                XCTAssertEqual(io.walVerificationFullReads, 2)
+                XCTAssertEqual(io.canonicalVerificationFullReads, 1)
+                events.insert("verified-io")
+            }
+        )
+        XCTAssertEqual(outcome, .migrated)
+        for name in ["UndoHistory.json", ".UndoHistory.schema4-cas.stage-0",
+                     ".UndoHistory.schema4-cas.stage-1", "verified-io"] {
+            XCTAssertTrue(events.contains(name), "Missing boundary: \(name)")
+        }
+        let reloaded = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
+        XCTAssertEqual(reloaded.storageState, .ready)
+        XCTAssertEqual(Set(reloaded.history.map(\.source)), ["current-0", "current-1", "incoming"])
+        reloaded.addRecord(source: "next", filePairs: [.init(original: "/n", trashed: "/trash/n")])
+        XCTAssertEqual(UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).history.count, 4)
+    }
+
+    func testWriteOpenContentChangeWithRestoredMtimeCannotAuthorizeCommit() throws {
+        let dir = tempDir()
+        let incomingURL = dir.appendingPathComponent("incoming/UndoHistory.json")
+        let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
+        let incoming = UndoHistoryStore(storeURL: incomingURL, persistenceFormat: .legacyJSON)
+        incoming.addRecord(source: "incoming", filePairs: [.init(original: "/i", trashed: "/trash/i")])
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
+        current.addRecord(source: "current", filePairs: [.init(original: "/c", trashed: "/trash/c")])
+        var expectedExternalBytes = try Data(contentsOf: destinationURL)
+        expectedExternalBytes[0] = 0x58
+        let outcome = UndoHistoryStore.migrateLegacyStoreIfNeeded(
+            from: incomingURL, to: destinationURL,
+            afterWriteOpenHookForTesting: { name, descriptor in
+                guard name == "UndoHistory.json" else { return }
+                var metadata = stat()
+                XCTAssertEqual(fstat(descriptor, &metadata), 0)
+                var byte: UInt8 = 0x58
+                XCTAssertEqual(pwrite(descriptor, &byte, 1, 0), 1)
+                var times = [metadata.st_atimespec, metadata.st_mtimespec]
+                XCTAssertEqual(futimens(descriptor, &times), 0)
+                XCTAssertEqual(fsync(descriptor), 0)
+            }
+        )
+        XCTAssertEqual(outcome, .rejected(.writeFailed))
+        XCTAssertEqual(try Data(contentsOf: destinationURL), expectedExternalBytes,
+                       "Changed content must be preserved, never overwritten as metadata drift")
+    }
+
     func testWALContentMutationWithRestoredMtimeStillFailsClosed() throws {
         let url = storeURL(in: tempDir())
-        let seed = UndoHistoryStore(storeURL: url)
+        let seed = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         seed.addRecord(source: "original", filePairs: [.init(original: "/a", trashed: "/trash/a")])
         seed.saveHistorySync()
         let canonical = try Data(contentsOf: url)
@@ -1077,7 +1190,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         var times = [metadata.st_atimespec, metadata.st_mtimespec]
         XCTAssertEqual(futimens(fd, &times), 0)
         XCTAssertEqual(fsync(fd), 0)
-        XCTAssertEqual(UndoHistoryStore(storeURL: url).storageState, .writeFailed)
+        XCTAssertEqual(UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON).storageState, .writeFailed)
         XCTAssertEqual(try Data(contentsOf: url), canonical)
     }
 
@@ -1088,7 +1201,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = storeURL(in: dir)
-        let seed = UndoHistoryStore(storeURL: url)
+        let seed = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         for index in 0..<3 {
             seed.addRecord(source: "before-reboot-\(index)", filePairs: [
                 .init(original: "/original/\(index)", trashed: "/trash/\(index)")
@@ -1110,7 +1223,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             }
         }
 
-        let recovered = UndoHistoryStore(storeURL: url)
+        let recovered = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(recovered.storageState, .ready)
         XCTAssertEqual(recovered.history.count, 3)
         recovered.addRecord(source: "after-reboot", filePairs: [
@@ -1118,7 +1231,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         ])
         recovered.saveHistorySync()
 
-        let reloaded = UndoHistoryStore(storeURL: url)
+        let reloaded = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(reloaded.storageState, .ready)
         XCTAssertEqual(reloaded.history.first?.source, "after-reboot")
     }
@@ -1127,7 +1240,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = storeURL(in: dir)
-        let seed = UndoHistoryStore(storeURL: url)
+        let seed = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         for index in 0..<3 {
             seed.addRecord(source: "record-\(index)", filePairs: [
                 .init(original: "/original/\(index)", trashed: "/trash/\(index)")
@@ -1144,7 +1257,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             record["markerIdentity"] = identity
         }
 
-        let rejected = UndoHistoryStore(storeURL: url)
+        let rejected = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(rejected.storageState, .writeFailed)
         XCTAssertEqual(try directHistorySources(at: url).count, 3)
     }
@@ -1153,7 +1266,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = storeURL(in: dir)
-        let seed = UndoHistoryStore(storeURL: url)
+        let seed = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         for index in 0..<4 {
             seed.addRecord(source: "record-\(index)", filePairs: [
                 .init(original: "/original/\(index)", trashed: "/trash/\(index)")
@@ -1174,7 +1287,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             )
         }
 
-        let recovered = UndoHistoryStore(storeURL: url)
+        let recovered = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(recovered.storageState, .ready)
         XCTAssertEqual(recovered.history.first?.source, "record-3")
     }
@@ -1183,7 +1296,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = storeURL(in: dir)
-        let seed = UndoHistoryStore(storeURL: url)
+        let seed = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         for index in 0..<3 {
             seed.addRecord(source: "record-\(index)", filePairs: [
                 .init(original: "/original/\(index)", trashed: "/trash/\(index)")
@@ -1204,7 +1317,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             record["payload"] = payload
         }
 
-        XCTAssertEqual(UndoHistoryStore(storeURL: url).storageState, .writeFailed)
+        XCTAssertEqual(UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON).storageState, .writeFailed)
         XCTAssertEqual(try directHistorySources(at: url).count, 3)
     }
 
@@ -1213,7 +1326,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let legacyURL = dir.appendingPathComponent("legacy/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
-        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacy.addRecord(source: "legacy", filePairs: [
             .init(original: "/legacy", trashed: "/trash/legacy")
         ])
@@ -1243,7 +1356,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             ),
             .migrated
         )
-        XCTAssertEqual(UndoHistoryStore(storeURL: destinationURL).storageState, .ready)
+        XCTAssertEqual(UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).storageState, .ready)
         XCTAssertEqual(try directHistorySources(at: destinationURL), Set(["legacy"]))
     }
 
@@ -1252,12 +1365,12 @@ final class UndoHistoryStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let legacyURL = dir.appendingPathComponent("legacy/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
-        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacy.addRecord(source: "legacy", filePairs: [
             .init(original: "/legacy", trashed: "/trash/legacy")
         ])
         legacy.saveHistorySync()
-        let current = UndoHistoryStore(storeURL: destinationURL)
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         current.addRecord(source: "current", filePairs: [
             .init(original: "/current", trashed: "/trash/current")
         ])
@@ -1311,7 +1424,8 @@ final class UndoHistoryStoreTests: XCTestCase {
         try Data("payload".utf8).write(to: trashed)
         let legacy = UndoHistoryStore(
             storeURL: legacyURL,
-            allowedRestoreRoots: [dir.path]
+            allowedRestoreRoots: [dir.path],
+            persistenceFormat: .legacyJSON
         )
         legacy.addRecord(source: "legacy-terminal", filePairs: [
             .init(original: original.path, trashed: trashed.path)
@@ -1339,7 +1453,8 @@ final class UndoHistoryStoreTests: XCTestCase {
         )
         let current = UndoHistoryStore(
             storeURL: destinationURL,
-            allowedRestoreRoots: [dir.path]
+            allowedRestoreRoots: [dir.path],
+            persistenceFormat: .legacyJSON
         )
         XCTAssertEqual(current.history.first?.recoveryState(at: 0), .init(
             status: .restored,
@@ -1352,7 +1467,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let realURL = dir.appendingPathComponent("real-history.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
-        let realStore = UndoHistoryStore(storeURL: realURL)
+        let realStore = UndoHistoryStore(storeURL: realURL, persistenceFormat: .legacyJSON)
         realStore.addRecord(source: "symlink-target", filePairs: [
             .init(original: "/original", trashed: "/trash")
         ])
@@ -1408,7 +1523,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let secondLink = dir.appendingPathComponent("legacy-second-link.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
-        let legacyStore = UndoHistoryStore(storeURL: legacyURL)
+        let legacyStore = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacyStore.addRecord(source: "hard-link", filePairs: [
             .init(original: "/original", trashed: "/trash")
         ])
@@ -1431,11 +1546,11 @@ final class UndoHistoryStoreTests: XCTestCase {
         let heldOriginalURL = dir.appendingPathComponent("held-original.json")
         let replacementSeedURL = dir.appendingPathComponent("replacement-seed.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
-        let legacyStore = UndoHistoryStore(storeURL: legacyURL)
+        let legacyStore = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacyStore.addRecord(source: "original", filePairs: [
             .init(original: "/original", trashed: "/trash")
         ])
-        let replacementStore = UndoHistoryStore(storeURL: replacementSeedURL)
+        let replacementStore = UndoHistoryStore(storeURL: replacementSeedURL, persistenceFormat: .legacyJSON)
         replacementStore.addRecord(source: "replacement", filePairs: [
             .init(original: "/replacement", trashed: "/replacement-trash")
         ])
@@ -1453,11 +1568,11 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(outcome, .rejected(.readFailed))
         XCTAssertFalse(FileManager.default.fileExists(atPath: destinationURL.path))
         XCTAssertEqual(
-            UndoHistoryStore(storeURL: heldOriginalURL).history.first?.source,
+            UndoHistoryStore(storeURL: heldOriginalURL, persistenceFormat: .legacyJSON).history.first?.source,
             "original"
         )
         XCTAssertEqual(
-            UndoHistoryStore(storeURL: legacyURL).history.first?.source,
+            UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON).history.first?.source,
             "replacement"
         )
     }
@@ -1467,11 +1582,11 @@ final class UndoHistoryStoreTests: XCTestCase {
         let legacyURL = dir.appendingPathComponent("LegacyStore/UndoHistory.json")
         let destinationSeedURL = dir.appendingPathComponent("destination-seed.json")
         let destinationURL = dir.appendingPathComponent("AmuxAIClean/UndoHistory.json")
-        let legacyStore = UndoHistoryStore(storeURL: legacyURL)
+        let legacyStore = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacyStore.addRecord(source: "legacy", filePairs: [
             .init(original: "/original", trashed: "/trash")
         ])
-        let destinationSeed = UndoHistoryStore(storeURL: destinationSeedURL)
+        let destinationSeed = UndoHistoryStore(storeURL: destinationSeedURL, persistenceFormat: .legacyJSON)
         destinationSeed.addRecord(source: "raced-destination", filePairs: [
             .init(original: "/new", trashed: "/new-trash")
         ])
@@ -1487,10 +1602,10 @@ final class UndoHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(outcome, .rejected(.writeFailed))
         XCTAssertEqual(
-            UndoHistoryStore(storeURL: destinationURL).history.first?.source,
+            UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).history.first?.source,
             "raced-destination"
         )
-        XCTAssertEqual(UndoHistoryStore(storeURL: legacyURL).history.first?.source, "legacy")
+        XCTAssertEqual(UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON).history.first?.source, "legacy")
     }
 
     func testLegacyWriteAfterSourceFenceConvergesNextBootstrapWithoutLosingCurrentAuthority() async throws {
@@ -1508,7 +1623,8 @@ final class UndoHistoryStoreTests: XCTestCase {
         try Data("current".utf8).write(to: currentTrash)
         let current = UndoHistoryStore(
             storeURL: destinationURL,
-            allowedRestoreRoots: [dir.path]
+            allowedRestoreRoots: [dir.path],
+            persistenceFormat: .legacyJSON
         )
         current.addRecord(source: "current-restored", filePairs: [
             .init(original: currentOriginal.path, trashed: currentTrash.path)
@@ -1542,7 +1658,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         )
         XCTAssertTrue(receiptPersisted)
 
-        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacy.addRecord(source: "legacy-before-fence", filePairs: [
             .init(original: "/legacy/original", trashed: "/legacy/trash")
         ])
@@ -1551,7 +1667,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try FileManager.default.copyItem(at: legacyURL, to: replacementSeedURL)
-        let lateLegacy = UndoHistoryStore(storeURL: replacementSeedURL)
+        let lateLegacy = UndoHistoryStore(storeURL: replacementSeedURL, persistenceFormat: .legacyJSON)
         lateLegacy.addRecord(source: "legacy-after-fence", filePairs: [
             .init(original: "/legacy/late-original", trashed: "/legacy/late-trash")
         ])
@@ -1567,7 +1683,8 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(first, .migrated)
         let firstSnapshot = UndoHistoryStore(
             storeURL: destinationURL,
-            allowedRestoreRoots: [dir.path]
+            allowedRestoreRoots: [dir.path],
+            persistenceFormat: .legacyJSON
         )
         XCTAssertFalse(firstSnapshot.history.contains { $0.source == "legacy-after-fence" })
         XCTAssertEqual(
@@ -1595,7 +1712,8 @@ final class UndoHistoryStoreTests: XCTestCase {
         XCTAssertEqual(second, .migrated)
         let converged = UndoHistoryStore(
             storeURL: destinationURL,
-            allowedRestoreRoots: [dir.path]
+            allowedRestoreRoots: [dir.path],
+            persistenceFormat: .legacyJSON
         )
         XCTAssertTrue(converged.history.contains { $0.source == "legacy-after-fence" })
         XCTAssertEqual(
@@ -1637,13 +1755,16 @@ final class UndoHistoryStoreTests: XCTestCase {
     }
 
     func testCrashTempSweepWaitsForStableFlockAndPreservesLookalikes() async throws {
+        // v2026.10.14: this targets the old UUID-named JSON staging-file sweeper and
+        // its flock ordering, not SQLite transaction/concurrency behavior.
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = storeURL(in: dir)
         let store = UndoHistoryStore(
             storeURL: url,
             maxHistoryCount: 10,
-            saveStrategy: .background
+            saveStrategy: .background,
+            persistenceFormat: .legacyJSON
         )
         let stale = dir.appendingPathComponent(".UndoHistory.\(UUID().uuidString).tmp")
         let malformed = dir.appendingPathComponent(".UndoHistory.not-a-uuid.tmp")
@@ -1884,7 +2005,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             let dir = tempDir()
             defer { try? FileManager.default.removeItem(at: dir) }
             let url = storeURL(in: dir)
-            let stale = UndoHistoryStore(storeURL: url)
+            let stale = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
             stale.addRecord(source: "clean", filePairs: [
                 .init(original: "/original", trashed: "/trash/original")
             ])
@@ -1899,7 +2020,7 @@ final class UndoHistoryStoreTests: XCTestCase {
 
             stale.saveHistorySync()
             XCTAssertEqual(stale.storageState, .corrupt)
-            let disk = UndoHistoryStore(storeURL: url)
+            let disk = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
             XCTAssertEqual(disk.storageState, .ready)
             verifyDiskMutation(try XCTUnwrap(disk.history.first))
         }
@@ -1928,7 +2049,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = storeURL(in: dir)
-        let seed = UndoHistoryStore(storeURL: url)
+        let seed = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         seed.addRecord(source: "clean", filePairs: [
             .init(original: "/original", trashed: "/trash/original")
         ])
@@ -1947,13 +2068,13 @@ final class UndoHistoryStoreTests: XCTestCase {
         }
 
         try writeRestoredDestination("/restored/first")
-        let stale = UndoHistoryStore(storeURL: url)
+        let stale = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(stale.history.first?.recoveryState(at: 0).restoredDestination, "/restored/first")
 
         try writeRestoredDestination("/restored/second")
         stale.saveHistorySync()
         XCTAssertEqual(stale.storageState, .corrupt)
-        let disk = UndoHistoryStore(storeURL: url)
+        let disk = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(
             disk.history.first?.recoveryState(at: 0).restoredDestination,
             "/restored/second"
@@ -1984,7 +2105,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             restoreScopeRoot: dir.path,
             recordedAt: Date(timeIntervalSince1970: 100)
         )
-        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         let entryPersisted = await store.addJournalEntriesDurably(
             source: "clean",
             entries: [entry]
@@ -2006,7 +2127,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         object["committedJournalIDs"] = [entry.legacyPlaintextID: receiptDate]
         try JSONSerialization.data(withJSONObject: object).write(to: url)
 
-        let migrated = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let migrated = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         XCTAssertEqual(migrated.storageState, .ready)
         XCTAssertEqual(migrated.history.first?.filePairs.first?.journalID, entry.id)
 
@@ -2046,7 +2167,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             originalIdentity: identity,
             restoreScopeRoot: dir.path
         )
-        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         let persistedEntry = await store.addJournalEntriesDurably(
             source: "clean",
             entries: [entry]
@@ -2072,7 +2193,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         object["records"] = records
         try JSONSerialization.data(withJSONObject: object).write(to: url)
 
-        let reloaded = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let reloaded = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         XCTAssertEqual(reloaded.storageState, .corrupt)
         XCTAssertTrue(reloaded.history.isEmpty)
     }
@@ -2331,7 +2452,7 @@ final class UndoHistoryStoreTests: XCTestCase {
     func testDuplicateRecordUUIDIsTypedCorruptionInsteadOfDictionaryTrap() throws {
         let dir = tempDir()
         let url = storeURL(in: dir)
-        let store = UndoHistoryStore(storeURL: url)
+        let store = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         store.addRecord(source: "first", filePairs: [
             .init(original: "/one", trashed: "/trash/one")
         ])
@@ -2346,7 +2467,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         object["records"] = records
         try JSONSerialization.data(withJSONObject: object).write(to: url)
 
-        let corrupted = UndoHistoryStore(storeURL: url)
+        let corrupted = UndoHistoryStore(storeURL: url, persistenceFormat: .legacyJSON)
         XCTAssertEqual(corrupted.storageState, .corrupt)
         XCTAssertTrue(corrupted.history.isEmpty)
     }
@@ -2486,7 +2607,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try Data("legacy".utf8).write(to: trash)
-        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let store = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         store.addRecord(source: "legacy", filePairs: [
             .init(original: original.path, trashed: trash.path)
         ])
@@ -2505,7 +2626,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         object["records"] = records
         try JSONSerialization.data(withJSONObject: object).write(to: url)
 
-        let migrated = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path])
+        let migrated = UndoHistoryStore(storeURL: url, allowedRestoreRoots: [dir.path], persistenceFormat: .legacyJSON)
         let record = try XCTUnwrap(migrated.history.first)
         let plan = await migrated.prepareRestore(record)
         XCTAssertEqual(plan.readyCount, 1)
@@ -2761,7 +2882,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: dir) }
             let legacyURL = dir.appendingPathComponent("legacy/UndoHistory.json")
             let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
-            let legacy = UndoHistoryStore(storeURL: legacyURL)
+            let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
             legacy.addRecord(source: boundary, filePairs: [
                 .init(original: "/old/\(boundary)", trashed: "/trash/\(boundary)")
             ])
@@ -2781,14 +2902,14 @@ final class UndoHistoryStoreTests: XCTestCase {
                 boundary
             )
             XCTAssertEqual(
-                UndoHistoryStore(storeURL: destinationURL).history.first?.source,
+                UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).history.first?.source,
                 boundary
             )
             let controlURLs = canonicalWALURLs(nextTo: destinationURL)
             XCTAssertEqual(controlURLs.filter { FileManager.default.fileExists(atPath: $0.path) }.count, 3)
             // First creation consumes one stage inode as canonical. The next ordinary write must
             // replenish that one fixed name instead of allocating an unbounded generation file.
-            let destination = UndoHistoryStore(storeURL: destinationURL)
+            let destination = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
             destination.addRecord(source: "replenish", filePairs: [
                 .init(original: "/replenish", trashed: "/trash/replenish")
             ])
@@ -2808,11 +2929,11 @@ final class UndoHistoryStoreTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: dir) }
             let legacyURL = dir.appendingPathComponent("legacy/UndoHistory.json")
             let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
-            let legacy = UndoHistoryStore(storeURL: legacyURL)
+            let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
             legacy.addRecord(source: "legacy-\(boundary)", filePairs: [
                 .init(original: "/legacy", trashed: "/trash/legacy")
             ])
-            let current = UndoHistoryStore(storeURL: destinationURL)
+            let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
             current.addRecord(source: "current", filePairs: [
                 .init(original: "/current", trashed: "/trash/current")
             ])
@@ -2847,11 +2968,11 @@ final class UndoHistoryStoreTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: dir) }
             let legacyURL = dir.appendingPathComponent("legacy/UndoHistory.json")
             let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
-            let legacy = UndoHistoryStore(storeURL: legacyURL)
+            let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
             legacy.addRecord(source: "legacy", filePairs: [
                 .init(original: "/legacy", trashed: "/trash/legacy")
             ])
-            let current = UndoHistoryStore(storeURL: destinationURL)
+            let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
             current.addRecord(source: "current", filePairs: [
                 .init(original: "/current", trashed: "/trash/current")
             ])
@@ -2881,7 +3002,7 @@ final class UndoHistoryStoreTests: XCTestCase {
                 "Ambiguous canonical bytes must retain both data slots and both marker slots"
             )
             XCTAssertEqual(
-                UndoHistoryStore(storeURL: destinationURL).storageState,
+                UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).storageState,
                 .writeFailed
             )
         }
@@ -2893,11 +3014,11 @@ final class UndoHistoryStoreTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: dir) }
             let legacyURL = dir.appendingPathComponent("legacy/UndoHistory.json")
             let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
-            let legacy = UndoHistoryStore(storeURL: legacyURL)
+            let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
             legacy.addRecord(source: "legacy", filePairs: [
                 .init(original: "/legacy", trashed: "/trash/legacy")
             ])
-            let current = UndoHistoryStore(storeURL: destinationURL)
+            let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
             current.addRecord(source: "current", filePairs: [
                 .init(original: "/current", trashed: "/trash/current")
             ])
@@ -2935,15 +3056,15 @@ final class UndoHistoryStoreTests: XCTestCase {
         let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
         let heldDestinationURL = dir.appendingPathComponent("current/held-old-inode.json")
         let externalSeedURL = dir.appendingPathComponent("external/UndoHistory.json")
-        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacy.addRecord(source: "legacy", filePairs: [
             .init(original: "/legacy", trashed: "/trash/legacy")
         ])
-        let current = UndoHistoryStore(storeURL: destinationURL)
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         current.addRecord(source: "current", filePairs: [
             .init(original: "/current", trashed: "/trash/current")
         ])
-        let external = UndoHistoryStore(storeURL: externalSeedURL)
+        let external = UndoHistoryStore(storeURL: externalSeedURL, persistenceFormat: .legacyJSON)
         external.addRecord(source: "external", filePairs: [
             .init(original: "/external", trashed: "/trash/external")
         ])
@@ -2980,15 +3101,15 @@ final class UndoHistoryStoreTests: XCTestCase {
         let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
         let heldDestinationURL = dir.appendingPathComponent("current/held-before-open.json")
         let externalSeedURL = dir.appendingPathComponent("external/UndoHistory.json")
-        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacy.addRecord(source: "legacy", filePairs: [
             .init(original: "/legacy", trashed: "/trash/legacy")
         ])
-        let current = UndoHistoryStore(storeURL: destinationURL)
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         current.addRecord(source: "current", filePairs: [
             .init(original: "/current", trashed: "/trash/current")
         ])
-        let external = UndoHistoryStore(storeURL: externalSeedURL)
+        let external = UndoHistoryStore(storeURL: externalSeedURL, persistenceFormat: .legacyJSON)
         external.addRecord(source: "external", filePairs: [
             .init(original: "/external", trashed: "/trash/external")
         ])
@@ -3022,7 +3143,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let destinationURL = storeURL(in: dir)
-        let store = UndoHistoryStore(storeURL: destinationURL)
+        let store = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         for index in 0..<3 {
             store.addRecord(source: "record-\(index)", filePairs: [
                 .init(original: "/\(index)", trashed: "/trash/\(index)")
@@ -3086,7 +3207,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             Darwin.close(descriptor)
         }
 
-        let rejected = UndoHistoryStore(storeURL: destinationURL)
+        let rejected = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         XCTAssertEqual(rejected.storageState, .writeFailed)
         XCTAssertEqual(try directHistorySources(at: destinationURL).count, 3)
     }
@@ -3095,7 +3216,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let destinationURL = storeURL(in: dir)
-        let store = UndoHistoryStore(storeURL: destinationURL)
+        let store = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         for index in 0..<3 {
             store.addRecord(source: "record-\(index)", filePairs: [
                 .init(original: "/\(index)", trashed: "/trash/\(index)")
@@ -3117,7 +3238,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             XCTAssertEqual(fsync(inactiveFD), 0)
             Darwin.close(inactiveFD)
         }
-        let recovered = UndoHistoryStore(storeURL: destinationURL)
+        let recovered = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         XCTAssertEqual(recovered.storageState, .ready)
         XCTAssertEqual(recovered.history.count, 3)
 
@@ -3132,7 +3253,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         try FileManager.default.moveItem(at: stageURL, to: heldStageURL)
         try Data("foreign-stage".utf8).write(to: stageURL)
 
-        let rejected = UndoHistoryStore(storeURL: destinationURL)
+        let rejected = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         XCTAssertEqual(rejected.storageState, .writeFailed)
         XCTAssertEqual(try Data(contentsOf: stageURL), Data("foreign-stage".utf8))
         XCTAssertTrue(FileManager.default.fileExists(atPath: heldStageURL.path))
@@ -3143,7 +3264,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let destinationURL = storeURL(in: dir)
-        let store = UndoHistoryStore(storeURL: destinationURL, maxHistoryCount: 20)
+        let store = UndoHistoryStore(storeURL: destinationURL, maxHistoryCount: 20, persistenceFormat: .legacyJSON)
         for index in 0..<12 {
             store.addRecord(source: "record-\(index)", filePairs: [
                 .init(original: "/\(index)", trashed: "/trash/\(index)")
@@ -3164,7 +3285,7 @@ final class UndoHistoryStoreTests: XCTestCase {
             XCTAssertEqual(metadata.st_mode & mode_t(0o777), mode_t(0o600), url.lastPathComponent)
         }
         XCTAssertEqual(
-            UndoHistoryStore(storeURL: destinationURL).history.first?.source,
+            UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON).history.first?.source,
             "after-0644"
         )
     }
@@ -3174,11 +3295,11 @@ final class UndoHistoryStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let legacyURL = dir.appendingPathComponent("legacy/UndoHistory.json")
         let destinationURL = dir.appendingPathComponent("current/UndoHistory.json")
-        let legacy = UndoHistoryStore(storeURL: legacyURL)
+        let legacy = UndoHistoryStore(storeURL: legacyURL, persistenceFormat: .legacyJSON)
         legacy.addRecord(source: "legacy", filePairs: [
             .init(original: "/legacy", trashed: "/trash/legacy")
         ])
-        let current = UndoHistoryStore(storeURL: destinationURL)
+        let current = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         current.addRecord(source: "current", filePairs: [
             .init(original: "/current", trashed: "/trash/current")
         ])
@@ -3207,7 +3328,7 @@ final class UndoHistoryStoreTests: XCTestCase {
         }
 
         let started = Date()
-        let reader = UndoHistoryStore(storeURL: destinationURL)
+        let reader = UndoHistoryStore(storeURL: destinationURL, persistenceFormat: .legacyJSON)
         let blockedFor = Date().timeIntervalSince(started)
         XCTAssertGreaterThanOrEqual(
             blockedFor,

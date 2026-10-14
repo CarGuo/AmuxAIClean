@@ -856,16 +856,27 @@ private struct TreeScanEvidenceProjection: Sendable {
     private let permissionDeniedPaths: Set<String>
     private let tccProtectedPaths: Set<String>
     private let incompletePaths: Set<String>
-    private let incompleteDescendantAncestors: Set<String>
+    // v2026.10.14: List/Smart Care consume the same indexed typed evidence as Tree.
+    // The reason-bearing ancestor index also supplies Tree's descendant membership:
+    // one ancestor walk/index avoids adding a duplicate path set to synchronous safety reads.
+    private let reasonsByPath: [String: Set<ScanIncompleteReason>]
+    private let descendantReasonsByAncestor: [String: Set<ScanIncompleteReason>]
 
     init(issues: [ScanIncompleteIssue] = []) {
         var permissionDenied = Set<String>()
         var tccProtected = Set<String>()
         var incomplete = Set<String>()
-        var descendantAncestors = Set<String>()
+        var pathReasons: [String: Set<ScanIncompleteReason>] = [:]
+        var ancestorReasons: [String: Set<ScanIncompleteReason>] = [:]
         for issue in issues {
             let path = Self.normalize(issue.path)
             guard !path.isEmpty else { continue }
+            pathReasons[path, default: []].insert(issue.reason)
+            var cursor = path
+            while let parent = Self.parentPath(of: cursor) {
+                ancestorReasons[parent, default: []].insert(issue.reason)
+                cursor = parent
+            }
             switch issue.reason {
             case .permissionDenied:
                 permissionDenied.insert(path)
@@ -874,12 +885,25 @@ private struct TreeScanEvidenceProjection: Sendable {
             case .enumerationFailed, .metadataUnavailable:
                 incomplete.insert(path)
             }
-            Self.insertStrictAncestors(of: path, into: &descendantAncestors)
         }
         permissionDeniedPaths = permissionDenied
         tccProtectedPaths = tccProtected
         incompletePaths = incomplete
-        incompleteDescendantAncestors = descendantAncestors
+        reasonsByPath = pathReasons
+        descendantReasonsByAncestor = ancestorReasons
+    }
+
+    func deletionIncompleteReasons(for path: String) -> Set<ScanIncompleteReason> {
+        guard !reasonsByPath.isEmpty else { return [] }
+        let normalized = Self.normalize(path)
+        var reasons = descendantReasonsByAncestor[normalized] ?? []
+        var cursor = normalized
+        while !cursor.isEmpty {
+            if let current = reasonsByPath[cursor] { reasons.formUnion(current) }
+            guard let parent = Self.parentPath(of: cursor) else { break }
+            cursor = parent
+        }
+        return reasons
     }
 
     func projectedState(
@@ -890,8 +914,7 @@ private struct TreeScanEvidenceProjection: Sendable {
         // v2026.10.09: an empty immutable evidence index cannot alter either fallback.
         // Prune/terminal transactions project tens of thousands of rows; avoid doing
         // any path work when there is no evidence to query.
-        if permissionDeniedPaths.isEmpty, tccProtectedPaths.isEmpty,
-           incompletePaths.isEmpty, incompleteDescendantAncestors.isEmpty {
+        if reasonsByPath.isEmpty {
             return ProjectedState(
                 accessState: fallbackAccessState,
                 subtreeCompleteness: fallbackSubtreeCompleteness
@@ -909,7 +932,7 @@ private struct TreeScanEvidenceProjection: Sendable {
             accessState = fallbackAccessState
         }
 
-        let containsIncompleteDescendant = incompleteDescendantAncestors.contains(normalized)
+        let containsIncompleteDescendant = descendantReasonsByAncestor[normalized] != nil
 
         return ProjectedState(
             accessState: accessState,
@@ -933,17 +956,6 @@ private struct TreeScanEvidenceProjection: Sendable {
         while true {
             if paths.contains(cursor) { return true }
             guard let parent = parentPath(of: cursor) else { return false }
-            cursor = parent
-        }
-    }
-
-    private static func insertStrictAncestors(
-        of path: String,
-        into ancestors: inout Set<String>
-    ) {
-        var cursor = path
-        while let parent = parentPath(of: cursor) {
-            ancestors.insert(parent)
             cursor = parent
         }
     }
@@ -2989,6 +3001,9 @@ public final class ScanCoordinator: ObservableObject {
         var totalBytes: Int64 = 0
         var fileCount = 0
         var issues = Set(output.discoveryIssues)
+        let accessEvidence = TreeScanEvidenceProjection(
+            issues: output.discoveryIssues + output.entries.flatMap(\.measurement.incompleteIssues)
+        )
 
         for entry in output.entries {
             guard !Task.isCancelled else {
@@ -3008,7 +3023,6 @@ public final class ScanCoordinator: ObservableObject {
             let titleSuffix = hit.groupKey.flatMap { $0.isEmpty ? nil : $0 }
                 .map { " · \($0) · \(hit.versionName)" }
                 ?? " · \(hit.versionName)"
-            let scanWasIncomplete = !measurement.deletionDeniedPaths.isEmpty
             rows.append(RowItem(
                 id: hit.url.path,
                 url: hit.url,
@@ -3017,8 +3031,8 @@ public final class ScanCoordinator: ObservableObject {
                 bytes: measurement.allocatedBytes,
                 logicalBytes: measurement.logicalBytes,
                 fileCount: measurement.fileCount,
-                verdict: scanWasIncomplete && verdict != .forbid ? .forbid : verdict,
-                rejection: scanWasIncomplete && verdict != .forbid ? .accessDenied : rejection,
+                verdict: verdict,
+                rejection: rejection,
                 vendorName: vendor?.name,
                 vendorNote: "retain: \(hit.retainedLatest)",
                 runningBundleIDPrefix: vendor?.bundleIDPrefix,
@@ -3031,7 +3045,8 @@ public final class ScanCoordinator: ObservableObject {
                 vendorNotePresentation: .catalog(
                     "versioned-root.retained_version %@",
                     arguments: [.string(hit.retainedLatest)]
-                )
+                ),
+                scanIncompleteReasons: accessEvidence.deletionIncompleteReasons(for: hit.url.path)
             ))
         }
         rows.sort { $0.bytes > $1.bytes }
@@ -3096,7 +3111,13 @@ public final class ScanCoordinator: ObservableObject {
     ) async -> CommonAppCachePresentation? {
         guard let output = await owner.snapshot() else { return nil }
         let scanResult = output.scanResult
-        let incompletePaths = scanResult.deletionProtectedPaths
+        let discoveryIssues = output.standardDiscovery.issues.map(\.scanIncompleteIssue)
+        var evidence = ScanIncompleteEvidenceIndex(
+            issues: scanResult.incompletePaths.map(commonAppCacheIncompleteIssue)
+        )
+        for issue in discoveryIssues { evidence.record(issue) }
+        let issues = evidence.orderedIssues
+        let accessEvidence = TreeScanEvidenceProjection(issues: issues)
         var rows: [RowItem] = []
         rows.reserveCapacity(scanResult.hits.count)
         var seenPaths = Set<String>()
@@ -3115,7 +3136,6 @@ public final class ScanCoordinator: ObservableObject {
                 trie: trie,
                 home: home
             )
-            let isIncomplete = incompletePaths.contains { pathsOverlap(path, $0) }
             let isStandardRule = hit.source == "standard-macos-cache"
             let titlePresentation: LocalizedTextDescriptor = isStandardRule
                 ? .catalog(
@@ -3134,8 +3154,8 @@ public final class ScanCoordinator: ObservableObject {
                 bytes: hit.sizeBytes,
                 logicalBytes: hit.logicalSizeBytes,
                 fileCount: hit.entryCount,
-                verdict: isIncomplete ? .forbid : verdict,
-                rejection: isIncomplete ? .accessDenied : rejection,
+                verdict: verdict,
+                rejection: rejection,
                 vendorName: vendor?.name ?? hit.ruleName,
                 vendorNote: hit.reason ?? hit.source,
                 runningBundleIDPrefix: hit.bundleIDPrefix,
@@ -3145,7 +3165,8 @@ public final class ScanCoordinator: ObservableObject {
                 vendorNamePresentation: vendor.map {
                     LocalizedTextDescriptor.verbatim($0.name)
                 } ?? titlePresentation,
-                vendorNotePresentation: notePresentation
+                vendorNotePresentation: notePresentation,
+                scanIncompleteReasons: accessEvidence.deletionIncompleteReasons(for: path)
             ))
         }
         rows.sort {
@@ -3161,12 +3182,6 @@ public final class ScanCoordinator: ObservableObject {
                 uniqueEntryCount: scanResult.uniqueEntryCount,
                 completedGroupCount: latestProgress?.completedGroups ?? 0
             )
-        let discoveryIssues = output.standardDiscovery.issues.map(\.scanIncompleteIssue)
-        var evidence = ScanIncompleteEvidenceIndex(
-            issues: scanResult.incompletePaths.map(commonAppCacheIncompleteIssue)
-        )
-        for issue in discoveryIssues { evidence.record(issue) }
-        let issues = evidence.orderedIssues
         let isComplete = scanResult.isComplete && discoveryIssues.isEmpty
         let terminalProgress = CommonAppCacheScanner.Progress(
             phase: .terminal,
@@ -3501,7 +3516,7 @@ public final class ScanCoordinator: ObservableObject {
             var snapshotRowRollup = ScanSnapshotRowRollup()
             for row in snapshotRows {
                 guard !Task.isCancelled else { return nil }
-                snapshotRowRollup.record(verdict: row.verdict, bytes: row.bytes)
+                snapshotRowRollup.record(row: row)
             }
             let output = PreparedTreeLocaleProjection(
                 cache: cache,
@@ -8677,7 +8692,7 @@ public final class ScanCoordinator: ObservableObject {
             guard whitelist.isEmpty || !Self.isWhitelisted(path, in: whitelist) else {
                 continue
             }
-            rows.append(RowItem(
+            let row = RowItem(
                 id: path,
                 url: bucket.url,
                 title: bucket.url.lastPathComponent,
@@ -8692,9 +8707,11 @@ public final class ScanCoordinator: ObservableObject {
                 runningBundleIDPrefix: safety.vendor?.bundleIDPrefix,
                 isActive: false,
                 hasChildren: bucket.hasChildren,
-                modificationDate: bucket.modificationDate
-            ))
-            rowRollup.record(verdict: safety.verdict, bytes: bucket.bytes)
+                modificationDate: bucket.modificationDate,
+                scanIncompleteReasons: treeEvidence.deletionIncompleteReasons(for: path)
+            )
+            rows.append(row)
+            rowRollup.record(row: row)
         }
         let rowMaterializationFinished = DispatchTime.now().uptimeNanoseconds
 
@@ -11524,7 +11541,8 @@ public final class ScanCoordinator: ObservableObject {
                 modificationDate: row.modificationDate,
                 titlePresentation: row.titlePresentation,
                 vendorNamePresentation: row.vendorNamePresentation,
-                vendorNotePresentation: row.vendorNotePresentation
+                vendorNotePresentation: row.vendorNotePresentation,
+                scanIncompleteReasons: row.scanIncompleteReasons
             ))
         }
         let sortKeyDependsOnAggregates: Bool = {
@@ -12197,7 +12215,8 @@ public final class ScanCoordinator: ObservableObject {
                 runningBundleIDPrefix: row.runningBundleIDPrefix, isActive: row.isActive,
                 hasChildren: row.hasChildren, modificationDate: row.modificationDate,
                 titlePresentation: row.titlePresentation, vendorNamePresentation: row.vendorNamePresentation,
-                vendorNotePresentation: row.vendorNotePresentation)
+                vendorNotePresentation: row.vendorNotePresentation,
+                scanIncompleteReasons: row.scanIncompleteReasons)
         }
         if snapshot.isFinished { rows.sort { sortKey.lessThan($0, $1, locale: locale) } }
         snapshot = ScanSnapshot(categoryID: snapshot.categoryID, rows: rows,
@@ -12796,7 +12815,8 @@ public final class ScanCoordinator: ObservableObject {
                 modificationDate: updatedMtime,
                 titlePresentation: row.titlePresentation,
                 vendorNamePresentation: row.vendorNamePresentation,
-                vendorNotePresentation: row.vendorNotePresentation
+                vendorNotePresentation: row.vendorNotePresentation,
+                scanIncompleteReasons: evidenceProjection.deletionIncompleteReasons(for: row.id)
             )
             didMutateSnapshotRows = true
         }
@@ -12840,7 +12860,8 @@ public final class ScanCoordinator: ObservableObject {
                     vendorNote: safety.2?.note,
                     runningBundleIDPrefix: safety.2?.bundleIDPrefix ?? old?.runningBundleIDPrefix,
                     hasChildren: bucket.hasChildren, modificationDate: bucket.modificationDate,
-                    titlePresentation: old?.titlePresentation)
+                    titlePresentation: old?.titlePresentation,
+                    scanIncompleteReasons: evidenceProjection.deletionIncompleteReasons(for: path))
             }
             if measurement.isComplete {
                 nextBuckets = nextBuckets.filter { !pathBelongsToSubtree($0.key, rootPath: rootPath) || children.contains($0.key) }
@@ -14217,7 +14238,8 @@ public final class ScanCoordinator: ObservableObject {
                 runningBundleIDPrefix: vendor?.bundleIDPrefix,
                 isActive: active,
                 hasChildren: bucket.hasChildren,
-                modificationDate: bucket.modificationDate
+                modificationDate: bucket.modificationDate,
+                scanIncompleteReasons: treeScanEvidenceProjection.deletionIncompleteReasons(for: path)
             ))
         }
         let rows: [RowItem]

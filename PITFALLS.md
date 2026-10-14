@@ -1274,6 +1274,10 @@ C1。受保护 rules 数据的双语迁移也仍待单独授权，不能把 cata
 
 ## 10. v2026.07.18：Trash completion 与 Undo 不是两个松散异步步骤
 
+> v2026.10.14 存储边界修订：本节的回执顺序与身份协议继续适用；生产 Undo 已改为系统 SQLite，
+> pending/completion 仍是短期 JSON。旧 JSON/WAL 的格式、容量与临时文件细节仅适用于 legacy
+> fixture/import，当前实现及退役过程见文末 SQLite 条目。
+
 ### 事故根因
 
 `NSWorkspace.recycle` 返回的 path pair 只说明系统回调观察到一次移动。若此后再从废纸篓路径
@@ -1285,14 +1289,15 @@ ledger、再异步写 Undo，进程崩溃会留下“文件已经移动、历史
 
 1. 删除 reservation 冻结统一 `TrashObjectIdentity` 与恢复 scope root；callback 只能把这份身份
    连同系统 pair 写入 deterministic-ID completion journal，禁止事后从 Trash pathname 重新铸造。
-2. pending ledger、completion journal 与 UndoHistory 共用同一 durable replacement 原语，各自用
-   独立稳定 `<file>.lock` 串行 RMW。`reserve` 与尤其是进入 AppKit 前的 `claim` 都必须完成
+2. pending ledger、completion journal 使用 durable replacement，各自用独立稳定 `<file>.lock`
+   串行 RMW；v2026.10.14 的 UndoHistory 在原 history flock 内提交 SQLite 事务，不再替换整份 JSON。
+   `reserve` 与尤其是进入 AppKit 前的 `claim` 都必须完成
    temp-fd full write、file `fsync`、atomic rename、parent-directory `fsync`；仅有
    `Data.write(.atomic)` 不足以证明断电后仍能看到 claim，未耐久 claim 永远不能调用 recycle。
 3. UndoHistory 使用独立稳定 `<history>.lock` 做 read-modify-write 合并；完成协议必须严格按
    `record + replay receipt → exact-attempt ledger ack → journal receiptPrunePending → receipt prune
    → journal remove` 单调推进。journal row/ID 是 receipt prune 完成前的最后证据，禁止先删 row 再做
-   best-effort prune，否则固定上限会被 crash window 永久耗尽。任一步崩溃都由 journal 幂等重放，
+   best-effort prune，否则 receipt 会因 crash window 永久遗留。任一步崩溃都由 journal 幂等重放，
    不能用“写失败也先解除 pending”换取表面可用。receipt ID 必须绑定 operation、attempt、
    normalized original 与 trashed path 的 opaque SHA-256，Undo pair 必须另存
    attempt ID 并在 decode 时重算验证；禁止把绝对路径写入可能长期残留的字典 key。旧 path-bearing
@@ -1300,7 +1305,9 @@ ledger、再异步写 Undo，进程崩溃会留下“文件已经移动、历史
    journal 升级，不能猜测 capability。旧 plaintext receipt 要在 read/RMW 时清除。
 4. callback ledger transition 必须返回 `applied / stale / storageUnavailable`；`stale` 只否定旧 ledger
    ownership，不能否定已经 fsync 的 callback journal fact，禁止据此删 journal。启动 replay 先按 exact
-   operation+attempt 分组：live owner 跳过，dead/stale owner 都从 journal 幂等合并。整个
+   operation+attempt 分组：仍活跃的 owner 跳过，dead/stale owner 从 journal 幂等合并。
+   v2026.10.14 起，已明确结束并交还 exact attempt/path 的同进程 finalizer 也可恢复，不能仅因
+   App 进程仍存活而跳过；未交还的 sibling 与真正未知提交仍保留。整个
    `snapshot → Undo merge → exact ack → phase → receipt prune → remove → empty proof` 必须持有稳定
    `<journal>.recovery.lock`，不能只锁单次 JSON RMW；否则两个 App 进程会同时读到 replayable，迟到者
    重新制造 receipt。任一 journal group 未收敛时禁止运行可能清 ledger 的通用 reconciliation。
@@ -1308,12 +1315,13 @@ ledger、再异步写 Undo，进程崩溃会留下“文件已经移动、历史
    每次都在 history flock 内把本次 mutation 应用到最新磁盘 union，再做全局 recency 与稳定 tie-break。
    禁止 stale 十条快照先占满 LRU 后把另一实例的新记录截成第十一条；revision 只用于拒绝旧 UI 投影，
    不能代替 mutation 串行化。
-6. corrupt、permission/read failure、file-size 超限、单 record pair 超限与 journal write failure 都是
+6. corrupt、permission/read failure、legacy file-size/单 record pair 超限与 journal write failure 都是
    类型化 UI 状态，绝不能投影成“暂无历史”。completion-journal blocked 与 history storage 状态正交，
    普通成功 save/bootstrap 或单个 receipt ack 不得清除；只有 journal 已证明为空、所有 replay/ack/remove
    完成、ledger authority 可读且 durable/local blocked 集合都为空的完整 terminal 才能恢复 ready。
-   生产初始化、品牌迁移、读取、JSON decode 与 late-bootstrap 大合并在 utility task 完成；
-   8 MiB store 与 10,000 pairs/record 是拒绝而非静默截断合同。
+   初始化、读取、legacy JSON decode 与 late-bootstrap 大合并在后台完成。8 MiB store 与
+   10,000 pairs/record 仅是 legacy 解码拒绝边界；新 SQLite 按 pair 保存，不能用旧聚合上限拒绝
+   已接受 callback 事实。最近批次保留策略不等于单批事实的容量上限。
 7. 恢复目标必须仍是删除时 scope root 的严格后代。逐级目录通过 fd-relative `openat` +
    `O_NOFOLLOW` 打开/创建并复核设备，最终提交用 `renameatx_np(RENAME_EXCL)`，永不覆盖后来出现的
    同名项目。
@@ -1334,9 +1342,10 @@ ledger、再异步写 Undo，进程崩溃会留下“文件已经移动、历史
     不进入此 barrier。single-flight 不能替代第 4 条跨进程 flock，且每轮终态后必须允许后续请求重新
     证明，以观察刚追加的 journal 或重试瞬时存储失败。
 12. durable replace 在 temp `open(O_EXCL)` 后、atomic rename 前崩溃会留下私有 JSON sibling。v2026.07.18
-    起 pending ledger、completion journal 与 UndoHistory 只能在各自稳定跨进程 flock 已持有后，清理
-    本 store 的 `.trash-pending.<UUID>.tmp`、`.trash-completion.<UUID>.tmp`、
-    `.UndoHistory.<UUID>.tmp`。匹配必须是 writer 实际生成的 canonical UUID 完整语法，并用 no-follow
+    起 pending ledger、completion journal 及旧 Undo JSON 的遗留清理，只能在各自稳定跨进程 flock
+    已持有后清理本 store 的 `.trash-pending.<UUID>.tmp`、`.trash-completion.<UUID>.tmp`、
+    `.UndoHistory.<UUID>.tmp`。生产 SQLite rollback journal 由 SQLite 管理，不在此清理集合。
+    匹配必须是 writer 实际生成的 canonical UUID 完整语法，并用 no-follow
     metadata 只移除普通文件；相似前缀、额外 suffix、目录和 symlink 一律保留。禁止在通用 writer 内或
     flock 外做目录级 sweep，否则另一个活 writer 的仍打开 temp 会被当成 crash 遗留删除。清理后 parent
     directory fsync 失败只记录并留给下一锁 owner 重试，不能把非权威垃圾回收伪装成 store RMW 失败。
@@ -1357,13 +1366,14 @@ source CAS。要完全消除此边界只能由系统提供新的原子 API，而
   record/pair；后一窗口必须保留 `receiptPrunePending` journal 证据，重启后 receipt 与 row 都收敛为空。
   两个 recovery 实例强制重叠时，第二个必须阻塞在稳定 recovery flock，最终 Undo pair 单份、journal
   空、receipt 空；旧 journal/history 的 path-bearing ID 迁移也必须有测试。
-- corrupt、chmod 读失败、8 MiB 超限、wide record、durable-writer 失败和稳定 lock 阻塞均须有测试。
+- corrupt、chmod 读失败、legacy 8 MiB 超限/wide record、durable-writer 失败和稳定 lock 阻塞均须有
+  测试；生产 SQLite 另须证明已接受事实不会被旧 JSON 容量边界截断或拒绝。
 - callback 返回本 attempt 以外的 pair 必须被 scope fence 拒绝；任意两个 pair 复用同一 non-nil
   journal ID 或 receipt 出现非 ASCII lowercase hex 都属于损坏数据，必须 fail-closed。
 - claim durable-writer failure 必须证明 AppKit 调用次数为零；callback journal 已 durable 后的 ledger
   写失败必须返回 storageUnavailable 并保留 journal。mark-prune、receipt-prune、journal-remove 三处
   失败都必须保留 exact health block；remove 失败后的 finalizer 从 prune-pending 阶段继续。live-owner
-  replay 不得写 Undo，dead/stale-owner 组独立收敛。
+  replay 在 owner 仍活跃且未交还恢复权时不得写 Undo，dead/stale-owner 组独立收敛。
 - journal writer 失败必须证明 callbackObserved 与 blocked 精确路径只产生一次 ledger replace，重启仍
   恢复 exact attempt；操作 B 的真实 receipt ack 后 A 仍 blocked，只有完整集合移除 A 才 ready。
 - callback ledger 的一次瞬时 durable-writer 失败必须在同进程重试成功，并断言 workspace recycle 调用
@@ -1372,7 +1382,7 @@ source CAS。要完全消除此边界只能由系统提供新的原子 API，而
 - 两个都预载 10 条历史的实例并发各新增一条后，两条新记录必须都在最终 10 条中；snapshot 被钩子
   阻塞时 journal mutation 不得越过 FIFO。duplicate record UUID、duplicate journal row/ID 必须返回
   typed corruption，禁止 `Dictionary(uniqueKeysWithValues:)` trap。
-- 三个 store 都必须用 integration fixture 证明：持有其稳定 flock 的活 writer 期间 temp sweep 不运行；
+- 两个短期 JSON store 与 legacy Undo fixture 都必须证明：持有其稳定 flock 的活 writer 期间 temp sweep 不运行；
   释放后只清 canonical `<prefix>.<UUID>.tmp` 普通文件，malformed UUID、额外 suffix 与 exact-looking
   symlink 仍保留且 symlink target 内容不变。
 - check→move 测试在 source `fstatat` 后替换 pathname，必须检测目标身份不符、no-replace 回滚，
@@ -1485,6 +1495,11 @@ source CAS。要完全消除此边界只能由系统提供新的原子 API，而
 ---
 
 ## 13. v2026.07.19：Undo 品牌迁移不能用 pathname preflight 授权最终对象
+
+> v2026.10.14 适用范围：本节保留旧 JSON 品牌迁移/对账的事故与 fixture 合同，不能据此重新开放
+> 旧品牌兼容。当前生产只支持从 1.6.2 及以后升级，在 `AmuxAIClean` 目录导入旧 JSON 后退役到
+> SQLite；不迁移 1.6.0/1.6.1 的 `GSYCleanMac` 历史，也不恢复 1.5.9 服务身份。下述保留源文件、
+> 双 JSON 对账和 schema 4 水位规则不等于当前生产双写方案。
 
 ### 事故根因
 
@@ -1953,6 +1968,9 @@ Tree 投影时，增量刷新继续沿用空字典。完整空扫描通常已包
 
 ## v2026.10.14：撤销日志的跨运行证据不能把 ctime 当内容摘要
 
+> 此处 IDLE/PREPARED/ALLOCATING/REWRITING 指旧 JSON writer 的应用 WAL；修正继续保护 legacy
+> import/fixture，生产 SQLite 写入不沿用这套 WAL 状态机。
+
 1.6.10 试用日志出现 `idleForeignstageversion`，清理历史恢复被阻断，继而所有真实删除
 在 reservation 前返回 `ledgerUnavailable`。只读核对确认 stage 的对象身份、权限、大小、mtime
 及 SHA256 都一致，只有 ctime 改变；附加属性变化即可复现。Apple 的
@@ -1970,3 +1988,85 @@ CAS、路径替换、权限改变、内容摘要不符及歧义内容仍严格�
 
 验证须覆盖 xattr 导致 ctime 变化后的历史保留与下次写入、PREPARED 恢复、内容篡改后恢复
 mtime 仍拒绝，以及旧 callback 重放后生产 reservation 真正恢复。UI 交互验收另记 C4。
+
+
+## 2026-10-14：仅修启动校验仍会在真实写入时再次锁死删除
+
+> 下述 descriptor/WAL 校验是旧 JSON writer 的事故修正，继续用于 legacy import/fixture；
+> 后续生产历史已改用下一节的 SQLite 事务。
+
+1.6.11 的试用日志证明：一项真实回收完成，历史提交因 `destinationChangedBeforeDescriptorCommit`
+失败，后续无关请求全部被恢复闸门拒绝。只读比对只有 ctime 改变；原启动修复没有覆盖
+`O_RDWR` 打开 stage/reserve/canonical 本身引发元数据变化的窗口。
+
+同一个已打开 descriptor 上必须区分对象身份、安全元数据与内容版本。仅 ctime 漂移时才补做
+有界 SHA256，再复核 fd/path；不能无条件忽略 ctime、改按路径重开，或放过内容/权限/身份变化。
+所有提交和 durability fence 共用该验证；只读恢复使用 O_RDONLY。正常指纹稳定时不追加全量读取，
+诊断计数必须包含真正发生的补充读取。
+
+请求生命周期还必须区分“活 App 进程”和“活 finalizer”。callback 已终态但 Undo/清除写失败，
+应交接精确 attempt/path 的恢复权；不能让一次瞬时失败变成同进程永久 pending，也不能释放仍活跃的
+sibling。claim 后尚未调用系统即取消的残留状态，只能凭同一内核进程的整 operation 明确退休来解除，
+不得把跨进程 unknown 一并当作未提交。
+
+本轮进一步发现容量合同不一致、空 journal 不证明 Undo writer 健康、自制 WAL 缺少中断恢复终态。
+生产存储已按下一节改为 SQLite；实现变更不代表回归与交互验收已经完成。完整来源、入口矩阵和证据见
+[2026-10-14 删除阻断审查](docs/DELETION_BLOCKER_AUDIT_2026-10-14.md)。
+
+## v2026.10.14：Undo 写入权威改为 SQLite，旧 JSON 必须有证据地退役
+
+逐个补 WAL 的 stat 例外不能解决容量合同和写入前置条件：系统已经接受的 callback 可能大于旧
+JSON 历史允许的图像，空 completion journal 也不能证明下一次 Undo 写入能成功。生产公共
+`UndoHistoryStore` 因此改为 `UndoHistory.json.sqlite`；内部 `.legacyJSON` 只供显式旧格式
+fixture/import，不能作为生产存储失败后的回退。
+
+- 后台持久化 FIFO 与原有稳定 history flock 继续串行化 mutation。系统 SQLite 用
+  `BEGIN IMMEDIATE`、`journal_mode=DELETE`、`synchronous=EXTRA`、`fullfsync=ON` 提交，逐 pair
+  保存记录、恢复状态、receipt 和迁移水位。旧 8 MiB / 每 record 10,000 pairs 仅限制 legacy
+  解码，不限制新 SQLite 已接受事实；最近 10 批仍是历史保留策略。
+- 数据库与 sidecar 必须通过 no-follow、身份和 namespace 校验，未知 schema、损坏、文件替换
+  不能触发清空重建。SQLite 负责自己的 rollback journal；应用不得继续用手写 JSON WAL 推进
+  生产历史。`EXTRA` 在 DELETE 提交后另同步 journal 所在目录，参见
+  [SQLite 同步级别](https://sqlite.org/pragma.html#pragma_synchronous)。
+- 两个短期 JSON pending ledger/completion journal 仍保留。SQLite 的
+  [原子提交](https://sqlite.org/atomiccommit.html)只覆盖其数据库事务，并依赖底层锁与同步语义；
+  不能把三个持久 store 宣称为一次原子提交。record/receipt → exact ack → prune → remove 的
+  顺序及故障后重放协议继续适用。
+- `prepareForDeletion` 必须在 reserve 前进入同一 FIFO，从耐久历史重新加载，并实际提交一次
+  数据库写事务。读取成功、空 journal、UI 缓存 `.ready` 均不足以证明 writer 健康；失败必须零
+  reservation、零系统调用，以 typed 弹窗说明。
+
+旧 JSON 到 SQLite 使用有序退役协议，升级兼容下限仍为 1.6.2：
+
+1. 持有旧 history flock，验证并导入记录、receipt 与水位；将源文件的精确 bytes、身份及完整
+   manifest 先提交到数据库。原 bytes 归档保留迁移证据，不能冒充第二份可写历史。
+2. 数据库事务提交后，已有 `UndoHistory.json` 只经验证后的固定 descriptor 写入 schema 5
+   manifest；首次创建用完整 fsync 的私有 temp 加 `RENAME_EXCL` 发布。manifest 指向 SQLite
+   文件并携带迁移 ID；schema 5 不是 SQLite schema（数据库当前 schema 为 1），旧 writer 必须
+   拒绝继续写入退役历史。
+3. manifest 耐久后再提交 `migration.complete`。两次数据库事务和文件退役不是同一原子操作；
+   中断只能重放已提交意图允许的原版本、同一对象上的 manifest 精确前缀或完整 manifest。
+   并发替换、无关内容与未知损坏必须保留并拒绝，不能靠覆盖 pathname 完成迁移。
+4. 已有 legacy PREPARED 中断只在 marker/stage/reserve 摘要和对象身份成立、canonical 是完整
+   stage 的严格前缀时导入完整新图像；原 torn bytes 仍归档。不得把该狭窄证明泛化为忽略损坏，
+   也不得自动恢复 1.5.9 或 `GSYCleanMac` 旧品牌兼容。
+
+旧 JSON/WAL 测试必须显式选择 `.legacyJSON` 生成 fixture；普通新增、恢复、LRU 和并发测试继续
+使用生产默认 SQLite。必须覆盖旧容量边界以外的事实、prepare 真实写失败、事务回滚、manifest
+各中断窗口、旧 writer 拒绝、外部替换不覆盖及原 bytes 保留。统一测试仍在进行，实际通过范围与
+C4/C5 状态须另记，不能由本节描述推导。
+
+## v2026.10.14：入口资格必须跟随独立扫描证据与当前选中快照
+
+把 incomplete 合成 Safety `.forbid/.accessDenied` 会让 List 在进入共同预检前就失去专业重验
+入口；只刷新 Tree 表格、不刷新同路径 selected row，会让已完成扫描仍被旧 loading/缺证据资格
+锁死。共同合同应保留 typed incomplete 与 Safety 两条证据：复制、聚合、暂存及 Large Files
+不能丢失原因；Normal、Smart Care 和普通可清理容量仍排除不完整项，Professional 只通过现有
+目标重验与严格确认获得尝试权，不能覆盖真实 OS 拒绝。卸载的无关发现缺口不否定完整候选，
+所选 App 身份失效与候选自身证据门槛仍保留。
+
+Tree projection 通过原 request/source 校验后用已有路径索引刷新当前选择内容和资格，保持路径
+身份、滚动与用户清除选择；路径消失则清除。Main 的资格任务还要绑定 selection revision 和精确
+行快照，防止迟到结果覆盖同路径新证据。不能每帧全树遍历或在主线程重算 verdict。运行期收尾
+同样必须按精确 operation/attempt/path 交还已结束 finalizer 的恢复权；App 活着不能让已知终态
+永久 pending，活跃 sibling 和真正跨进程 unknown 也不能因此被释放。

@@ -86,6 +86,43 @@ struct PreparedTreeFlatProjection: Sendable {
     let rowRemovalRanges: [Range<Int>]?
 }
 
+enum TreeSelectionProjectionUpdate: Sendable, Equatable {
+    case unchanged
+    case clear
+    case refresh(TreeRow)
+}
+
+enum TreeSelectionProjectionPolicy {
+    // v2026.10.14 DB-08: the 2026.07.19 viewport fix preserved only path identity and
+    // left the parent's selected TreeRow frozen at its first click. Reconcile that one
+    // indexed row after the existing source/request CAS; never choose a new path or scan
+    // the full projection. Flat equality also catches loading/verdict-only changes.
+    static func update(
+        selectedPath: String?,
+        previousSelectedRow: FlatTreeRow?,
+        prepared: PreparedTreeFlatProjection
+    ) -> TreeSelectionProjectionUpdate {
+        guard prepared.changed, let selectedPath else { return .unchanged }
+        guard let index = prepared.rowIndexByPath[selectedPath],
+              prepared.rows.indices.contains(index) else { return .clear }
+        let current = prepared.rows[index]
+        guard current.row.path == selectedPath, !current.isLoadingPlaceholder else { return .clear }
+        return previousSelectedRow == current ? .unchanged : .refresh(current.row)
+    }
+}
+
+/// v2026.10.14 DB-08: cancelling a detached evaluation after its first cancellation
+/// check does not retract a queued MainActor commit. Same-path refreshes therefore need
+/// a request revision and exact row match, not only the old path equality check.
+struct TreeSelectionEligibilityRequest: Sendable {
+    let revision: UInt64
+    let row: TreeRow
+
+    func isCurrent(revision currentRevision: UInt64, selectedRow: TreeRow?) -> Bool {
+        revision == currentRevision && row == selectedRow
+    }
+}
+
 struct TreeTableRowRemovalDelta: Sendable, Equatable {
     let baseIdentityRevision: UInt64
     let nextIdentityRevision: UInt64
@@ -1412,6 +1449,16 @@ public struct TreeBrowserView: View {
 
     private func publishPreparedFlatProjection(_ prepared: PreparedTreeFlatProjection) {
         guard prepared.changed else { return }
+        let previousSelectedRow = selectedPath.flatMap { path in
+            flatRowIndexByPath[path].flatMap { index in
+                flatRows.indices.contains(index) ? flatRows[index] : nil
+            }
+        }
+        let selectionUpdate = TreeSelectionProjectionPolicy.update(
+            selectedPath: selectedPath,
+            previousSelectedRow: previousSelectedRow,
+            prepared: prepared
+        )
         let previousRowCount = flatRows.count
         let previousIdentityRevision = flatRowsIdentityRevision
         flatRows = prepared.rows
@@ -1439,16 +1486,17 @@ public struct TreeBrowserView: View {
         }
 
         // v2026.07.19 deletion/viewport regression: projection publication must never invent a
-        // selection. If the selected row disappeared, clear it; otherwise retain it verbatim.
+        // selection. v2026.10.14: retain its path, but publish changed metadata/eligibility.
         // Auto-selecting the first row coupled an async data refresh to table scrolling and made a
         // successful deletion jump back to the top of a large Tree.
-        let reconciledSelection = Self.selectionAfterProjection(
-            current: selectedPath,
-            rowIndexByPath: prepared.rowIndexByPath
-        )
-        if selectedPath != nil, reconciledSelection == nil {
+        switch selectionUpdate {
+        case .unchanged:
+            break
+        case .clear:
             selectedPath = nil
             onSelectionCleared?()
+        case .refresh(let row):
+            onSelect?(row)
         }
     }
 

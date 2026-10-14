@@ -82,7 +82,7 @@
 
 - **永不可覆盖**：relative/empty path、`..`、`/`、HOME/Library/Documents/Desktop/Downloads 等整根、HOME 外路径、系统卷、hardForbid prefix、symlink 解析后越界、不可解释的路径身份变化。
 - **可严格覆盖**：当前只允许由生产预检铸造的 `vendorPathRule` 类型化授权；其它产品策略必须逐类加入显式 allowlist 和测试，禁止字符串 contains 判断。
-- **扫描不完整**：`incomplete` 是证据质量，不是 OS 删除权限。专业模式可在目标级 `lstat + resolved scope + parent write/search` 重验、展示“内容未完整检查”并严格确认后尝试移动整个目标；它不得被统一映射成 Full Disk Access。
+- **扫描不完整**：`incomplete` 是证据质量，不是 OS 删除权限。v2026.10.14 起，行模型独立保留 Safety 判定与 typed 扫描缺口，复制、聚合及选中快照更新不能丢失任何一方。Normal 的选择和可清理容量、Smart Care 的默认清理仍排除缺证据项；专业模式可在目标级 `lstat + resolved scope + parent write/search` 重验、展示“内容未完整检查”并严格确认后尝试移动整个目标，不得因保留原 Safety 判定而自动获得删除权，也不得把缺口统一映射成 Full Disk Access。
 - **真实 OS 权限**：TCC、POSIX owner/mode、ACL、immutable flag 必须保留来源。当前无 root helper，不能承诺绕过；`NSWorkspace.recycle` 返回失败时如实展示。
 - **能力不可伪造**：覆盖授权必须绑定精确路径、精确 reason、扫描 revision 和确认上下文，执行前重新跑 Safety/路径解析。裸 `[String]` 回调和与 normal 等价的空心 `.force` 不构成授权。
 - **统一交互**：完整状态机见 [DELETION_UX_CONTRACT.md](docs/DELETION_UX_CONTRACT.md)。预检拒绝不能包装成执行结果，结果页不能承担首次授权。
@@ -119,15 +119,18 @@ HTTP 请求只有：
 
 - `~/Library/Application Support/AmuxAIClean/heuristic.json`：绝对路径及祖先前缀、
   deleted/restored/kept 计数与时间；
-- 同目录的 `clean_stats.json`、`whitelist.json`、`UndoHistory.json`、
-  `trash-pending-operations.json`、`trash-completion-journal.json`、
-  `simulator-managed-operations.json`：分别保存本地清理统计、白名单、最近 10 批恢复身份、
-  操作对账状态，以及系统已完成移动但尚未耐久合并进撤销历史的短期交接事实；交接 journal
+- 同目录的 `clean_stats.json`、`whitelist.json`、`trash-pending-operations.json`、
+  `trash-completion-journal.json`、`simulator-managed-operations.json`：分别保存本地清理统计、
+  白名单、操作对账状态，以及系统已完成移动但尚未耐久合并进撤销历史的短期交接事实；交接 journal
   包含原路径/废纸篓路径、恢复范围、操作与尝试 UUID、时间和文件身份，只能在 Undo 与 pending
   ledger 都收敛后移除，失败时留待启动重放；
-  `UndoHistory.json` 还会短期保存不含路径的 SHA-256 幂等 receipt；确认流程先在 journal
+- **v2026.10.14 撤销历史存储变更**：同目录的 `UndoHistory.json.sqlite` 是生产历史权威，保存最近
+  10 批恢复身份、逐项目恢复状态及不含路径的 SHA-256 幂等 receipt。确认流程先在 journal
   耐久标记 `receiptPrunePending`，再清 receipt，最后才移除 journal 项。任一阶段崩溃都由
-  启动恢复继续，不能在失去最后恢复证据后永久遗留 receipt；
+  启动恢复继续，不能在失去最后恢复证据后永久遗留 receipt。旧 JSON 导入时，其精确原始字节、
+  文件身份和退役意图也先存入此数据库；原始字节归档用于保留迁移证据，不是第二份可写历史。
+  `UndoHistory.json` 随后成为 schema 5 退役 manifest，仅记录存储格式、数据库文件名和迁移 ID；
+  兼容范围仍仅为 1.6.2 及以后升级；
 - 用户主动开启 Sentinel 后，同目录的 `sentinel-pending.json` 最多保存 100 条热点变化的
   绝对路径、时间和可选大小；当前服务是用户域 `com.amux.ai.Clean.sentinel.agent`。
   历史 root 服务 `com.amux.ai.Clean.sentinel` 使用文件名/Label 对应的 migration-only
@@ -149,14 +152,34 @@ HTTP 请求只有：
   枚举、导出、保留和清理只接受逐级 no-follow、精确日期名、普通且单链接的主 App 日志；合并
   导出使用固定 64 KiB 块写入同目录 `0600` 临时文件并 `fsync + renameat`，不得构造无界聚合
   `Data`；清理完成事件会进入新日志，不能宣称留下空文件；
-- Trash pending/completion 与 UndoHistory 使用 `0600` 随机临时文件做 fsync + rename；进程在
-  rename/unlink 前被强制终止时，遗留 `.trash-pending.<UUID>.tmp`、
-  `.trash-completion.<UUID>.tmp`、`.UndoHistory.<UUID>.tmp` 可能含路径。对应 store 必须在自身
-  稳定跨进程 flock 内按精确形状清理，禁止无锁 glob 或误删相似用户文件；
+- Trash pending/completion 仍使用 `0600` 随机临时 JSON 做 fsync + rename；进程在 rename/unlink
+  前被强制终止时，遗留 `.trash-pending.<UUID>.tmp`、`.trash-completion.<UUID>.tmp` 可能含路径。
+  旧 JSON writer 遗留的 `.UndoHistory.<UUID>.tmp` 也可能含路径。对应 store 必须在自身稳定
+  跨进程 flock 内按精确形状清理，禁止无锁 glob 或误删相似用户文件；生产 SQLite 的 rollback
+  journal 由 SQLite 管理，不得混入上述临时文件清理；
 - 用户可把大文件 JSON/TSV 或合并日志导出到任意选择位置；这类副本不受 App 的 7 天保留或
   “清除日志”控制，必须由用户自行删除。完整字段与清除顺序以隐私政策为准。
 
 完整字段、保留和清除方法只在 [PRIVACY.md](PRIVACY.md) 维护，代码或 schema 改动必须同步更新。
+
+**v2026.10.14 历史写入与退役边界**：`UndoHistoryStore` 公共初始化默认使用系统 SQLite；内部
+`legacyJSON` 仅供明确的旧格式 fixture/import 验证，不是生产故障后的回退 writer。生产事务在后台
+持久化队列与原有稳定 history flock 内执行，使用 `BEGIN IMMEDIATE`、`journal_mode=DELETE`、
+`synchronous=EXTRA` 和 `fullfsync=ON`。数据库、sidecar 与父目录身份必须通过 no-follow/身份检查；
+路径被替换、未知 schema 或损坏不能触发覆盖重建。SQLite 的提交原子性只覆盖数据库事务，遵循其
+[rollback-journal 原子提交](https://sqlite.org/atomiccommit.html)及文件系统同步假设，不覆盖外部
+JSON ledger/journal；三者继续使用精确 attempt 的顺序提交、回执和幂等重放协议。
+
+导入先在数据库提交原始字节、身份、记录及完整 manifest，再在同一 history flock 内退役旧路径，
+最后提交退役完成标记。已有旧文件只通过验证后的固定 descriptor 写入 manifest；首次创建使用
+完整 fsync 的私有临时文件与 `RENAME_EXCL` 发布，不能覆盖并发出现的对象。中断后只接受已提交
+退役意图允许的原版本或同一对象上的 manifest 精确前缀，以及完整 manifest；其它替换和歧义内容
+必须保留并拒绝。schema 5 使旧 JSON writer 无法把退役文件当作可继续写入的历史。已验证的旧
+PREPARED generation 可导入完整 stage，但必须同时证明旧 reserve、marker、目标身份和精确前缀；
+不能把任意损坏 JSON 当成可恢复数据。旧 JSON 的 8 MiB / 每条 10,000 pairs 仅是 legacy 解码边界，
+不再限制 SQLite 接收已接受的 callback 事实。每次真实删除 reserve 前的 `prepareForDeletion`
+必须提交一次真实数据库写事务；空 completion journal 或缓存的 `.ready` 不能证明 writer 可用。
+
 `PrivacyInfo.xcprivacy` 必须覆盖所有平台都适用的 collected-data、tracking 与 tracking-domain
 事实。可选 AI 的路径/名称、文件元数据和 Bearer API Key 分别按 `Other User Content`、
 `Other Data Types` 和 `User ID` 保守披露；允许自定义兼容端点意味着不能假设所有服务商都只在

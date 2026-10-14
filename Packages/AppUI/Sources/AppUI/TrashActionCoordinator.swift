@@ -274,16 +274,8 @@ struct TrashActionCoordinator {
         }
         if !dryRun, !pairs.isEmpty {
             if let undoCommit {
-                let persisted = await undoHistoryStore.addJournalEntriesDurably(
-                    source: source,
-                    entries: undoCommit.entries
-                )
-                if persisted {
-                    if !(await undoCommit.finishDurablyAfterUndoPersisted(
-                        pruningReceiptsIn: undoHistoryStore
-                    )) {
-                        AmuxLog.error(.trash, "Undo durable commit persisted but acknowledgement remains pending entries=\(undoCommit.entries.count)")
-                    }
+                if !(await undoCommit.persistAndFinish(source: source, in: undoHistoryStore)) {
+                    AmuxLog.error(.trash, "Undo durable commit handed to recovery entries=\(undoCommit.entries.count)")
                 }
             } else if undoJournalFailedPaths.isEmpty {
                 // Compatibility-only pipelines do not own the production durable capability.

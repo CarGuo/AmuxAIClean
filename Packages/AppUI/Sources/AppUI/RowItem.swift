@@ -19,6 +19,10 @@ public struct RowItem: Identifiable, Hashable, Sendable {
     public let hasChildren: Bool
     public let verdict: SafetyVerdict
     public let rejection: SafetyRejection
+    /// v2026.10.14: scan coverage and SafetyEngine policy are independent. A budget/read
+    /// gap may require Professional target revalidation, not a fabricated permanent forbid.
+    /// Exact path/stage/errno evidence remains in the owning scan snapshot.
+    public let scanIncompleteReasons: Set<ScanIncompleteReason>
     public let vendorName: String?
     public let vendorNote: String?
     public let vendorNamePresentation: LocalizedTextDescriptor?
@@ -51,7 +55,8 @@ public struct RowItem: Identifiable, Hashable, Sendable {
                 modificationDate: Date? = nil,
                 titlePresentation: LocalizedTextDescriptor? = nil,
                 vendorNamePresentation: LocalizedTextDescriptor? = nil,
-                vendorNotePresentation: LocalizedTextDescriptor? = nil) {
+                vendorNotePresentation: LocalizedTextDescriptor? = nil,
+                scanIncompleteReasons: Set<ScanIncompleteReason> = []) {
         self.id = id
         self.url = url
         self.title = title
@@ -65,6 +70,7 @@ public struct RowItem: Identifiable, Hashable, Sendable {
         self.hasChildren = hasChildren ?? (isDirectory && fileCount > 0)
         self.verdict = verdict
         self.rejection = rejection
+        self.scanIncompleteReasons = scanIncompleteReasons
         self.vendorName = vendorName
         self.vendorNote = vendorNote
         self.vendorNamePresentation = vendorNamePresentation
@@ -76,11 +82,20 @@ public struct RowItem: Identifiable, Hashable, Sendable {
         self.modificationDate = modificationDate
     }
 
-    /// `forbid` 项不允许勾选；其余可勾。
-    public var isSelectable: Bool { verdict != .forbid }
+    public var hasCompleteAccessEvidence: Bool { scanIncompleteReasons.isEmpty }
 
-    /// UI 默认是否勾上：仅 `.safe`。
-    public var defaultSelected: Bool { verdict == .safe }
+    public var deletionAccessEvidence: DeletionAccessEvidence {
+        guard let reason = scanIncompleteReasons.min(by: { $0.rawValue < $1.rawValue }) else {
+            return .complete
+        }
+        return .incomplete(DeletionIncompleteReason(scanIncompleteReason: reason))
+    }
+
+    /// Ordinary selection never grants an incomplete-scan override.
+    public var isSelectable: Bool { verdict != .forbid && hasCompleteAccessEvidence }
+
+    /// UI 默认是否勾上：仅证据完整的 `.safe`。
+    public var defaultSelected: Bool { verdict == .safe && hasCompleteAccessEvidence }
 
     public func displayTitle(locale: Locale) -> String {
         titlePresentation.localized(locale: locale)
@@ -491,13 +506,16 @@ struct ScanSnapshotRowRollup: Sendable, Equatable {
     private(set) var forbidBytes: Int64 = 0
     private(set) var maxRowBytes: Int64 = 0
 
-    mutating func record(verdict: SafetyVerdict, bytes: Int64) {
-        switch verdict {
-        case .safe: safeBytes &+= bytes
-        case .confirm: confirmBytes &+= bytes
-        case .forbid: forbidBytes &+= bytes
+    // v2026.10.14: capacity describes ordinary deletion eligibility, not policy alone.
+    // Keep incomplete rows' real Safety verdict intact while accounting their bytes as
+    // unavailable; accepting the whole row prevents prepared/public snapshots diverging.
+    mutating func record(row: RowItem) {
+        switch row.isSelectable ? row.verdict : .forbid {
+        case .safe: safeBytes &+= row.bytes
+        case .confirm: confirmBytes &+= row.bytes
+        case .forbid: forbidBytes &+= row.bytes
         }
-        if bytes > maxRowBytes { maxRowBytes = bytes }
+        if row.bytes > maxRowBytes { maxRowBytes = row.bytes }
     }
 }
 
@@ -534,11 +552,11 @@ public struct ScanSnapshot: Sendable, Equatable {
     // 在内容真没变（rows / totalBytes / scannedFileCount / bytesPerSecond / eta / safe/...）
     // 都一致时被 SwiftUI 自动短路 —— 不再触发 objectWillChange.send()，
     // 不再让整棵 MainView.body 失效。这是用户感受 "sidebar/主列表一起卡" 的核心治理点。
-    /// `.safe` 行字节合计 —— 业界 "Cleanable / Auto-cleanable" 口径。
+    /// 证据完整的 `.safe` 行字节合计 —— 业界 "Cleanable / Auto-cleanable" 口径。
     public let safeBytes: Int64
-    /// `.confirm` 行字节合计 —— UI 单列段，**不要**并进 cleanable 数字。
+    /// 证据完整的 `.confirm` 行字节合计 —— UI 单列段，**不要**并进 cleanable 数字。
     public let confirmBytes: Int64
-    /// `.forbid` 行字节合计 —— 仅供审计 / 调试，UI 一般不展示。
+    /// 普通删除不可用的行字节合计（`.forbid` 或证据不完整）；不改写原 Safety verdict。
     public let forbidBytes: Int64
     /// rows 的最大 bytes，用于 [RowContentView](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowView.swift) 体积条归一化。
     /// 由 publishSnapshot 同步算好（与 [MainView.listResults](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/MainView.swift) 旧 lazy map.max 等价）。
@@ -554,7 +572,7 @@ public struct ScanSnapshot: Sendable, Equatable {
                 bytesPerSecond: Double = 0, estimatedRemaining: TimeInterval? = nil) {
         var rowRollup = ScanSnapshotRowRollup()
         for row in rows {
-            rowRollup.record(verdict: row.verdict, bytes: row.bytes)
+            rowRollup.record(row: row)
         }
         self.init(
             categoryID: categoryID,
@@ -608,16 +626,16 @@ public struct ScanSnapshot: Sendable, Equatable {
     //
     // 业界对齐（CleanMyMac / Onyx / macOS Storage）：
     //   - "Cleanable" **只**计入安全可一键清理的桶（缓存 / 日志 / DerivedData / Trash 等），
-    //     对应本项目的 SafetyVerdict.safe；
-    //   - .confirm 项需用户审阅，独立桶单算（confirmBytes），UI 可拆为"需要确认"段；
-    //   - .forbid 项是绝对不动（SIP / 用户文档 / 凭证），列出来仅为审计。
+    //     对应本项目证据完整的 SafetyVerdict.safe；
+    //   - 证据完整的 .confirm 项需用户审阅，独立桶单算（confirmBytes）；
+    //   - forbidBytes 包含策略禁止及证据不完整的行，不代表它们有相同的拒绝原因。
     //
     // 实现：safeBytes / confirmBytes / forbidBytes 已在 init 内一次性预聚合为
     // stored let（见本结构开头），UI 直接读字段，零额外开销。守恒由
     // [CleanableBytesContractTests] 保证 safe + confirm + forbid == Σrows.bytes，
     // 防止后续 SafetyVerdict 增枚举时漏改 init 预聚合。
 
-    /// 业界口径的"可清理字节数"——**仅** `.safe` 行求和。
+    /// 业界口径的"可清理字节数"——**仅**证据完整的 `.safe` 行求和。
     ///
     /// **必须**用作 [VolumeCapacityCard.cleanableBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/VolumeCapacityCard.swift#L26) /
     /// [FloatingScanHUD.cleanableBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/FloatingScanHUD.swift) 的唯一来源。

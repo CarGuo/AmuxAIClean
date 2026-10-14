@@ -640,6 +640,7 @@ public struct MainView: View {
     @State private var treeSelection: TreeRow?
     @State private var canDeleteSelectedTreeRow: Bool = false
     @State private var treeSelectionEligibilityTask: Task<Void, Never>?
+    @State private var treeSelectionEligibilityRevision: UInt64 = 0
     /// Parent-to-Tree selection reset channel. Tree owns its AppKit selection locally for
     /// performance, so clearing only `treeSelection` would hide detail while leaving the row
     /// highlighted and unable to reopen on the next identical click.
@@ -1143,6 +1144,7 @@ public struct MainView: View {
             // bug A：清单 ↔ 树形 切换时各清各的选中态，避免两条选中互相覆盖。
             detail = nil
             treeSelection = nil
+            refreshSelectedTreeRowDeletionEligibility()
         }
         .onValueChange(of: settings.minFileSizeMB) { _, _ in
             // v1.0 T4：阈值改变时，若当前正看大文件视图，自动重扫，
@@ -2431,8 +2433,8 @@ public struct MainView: View {
                 // 即"已扫到的全部字节"，导致 sidebar 出现"扫多少就 Cleanable 多少"的离谱口径（
                 // 用户截图: Scanning 133.49 GB ↔ Cleanable 133.49 GB）。
                 // 现在统一走 [ScanSnapshot.safeBytes / .confirmBytes](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/RowItem.swift#L375-L387)
-                // ——仅 `SafetyVerdict.safe` 行求和算入"可清"段、`SafetyVerdict.confirm`
-                // 行单独成"需要确认"段，与业界（CleanMyMac / DaisyDisk）四段分层对齐。
+                // ——仅证据完整的 `SafetyVerdict.safe` 行算入"可清"段、完整的
+                // `SafetyVerdict.confirm` 行单独成"需要确认"段；缺口保留为其它已用。
                 safeBytes: coordinator.snapshot.safeBytes,
                 confirmBytes: coordinator.snapshot.confirmBytes,
                 // v1.3 review-fix Must1：snapshot 探测失败时让卡片提供"重试"按钮，回调到 coordinator.refreshVolumeCapacity()。
@@ -4044,6 +4046,7 @@ public struct MainView: View {
     private func closeInlineDetail() {
         detail = nil
         treeSelection = nil
+        refreshSelectedTreeRowDeletionEligibility()
         treeSelectionResetRevision &+= 1
     }
 
@@ -4642,9 +4645,18 @@ public struct MainView: View {
     /// projection 时已预热 VerdictCache）；极少数未命中时派发到后台 utility/userInitiated
     /// 计算，确保 footerBar 在 MainActor 渲染时零对象分配、零同步磁盘 I/O（PITFALLS §2.9）。
     private func refreshSelectedTreeRowDeletionEligibility() {
+        // v2026.10.14 DB-08: every selected-snapshot refresh/reset owns a new commit
+        // revision, including same-path updates arriving after lazy measurement.
+        treeSelectionEligibilityRevision &+= 1
         treeSelectionEligibilityTask?.cancel()
         treeSelectionEligibilityTask = nil
-        guard let row = treeSelection else {
+        // Loading-only projections can keep an identical TreeRow. Include that authority
+        // in the stored footer value so completion publishes a real false -> true change.
+        guard let row = treeSelection,
+              !coordinator.isFetchingChildren(
+                  of: row.path,
+                  sortedBy: .from(global: settings.mainListSortKey)
+              ) else {
             canDeleteSelectedTreeRow = false
             return
         }
@@ -4656,7 +4668,10 @@ public struct MainView: View {
             return
         }
         canDeleteSelectedTreeRow = false
-        let expectedPath = row.path
+        let request = TreeSelectionEligibilityRequest(
+            revision: treeSelectionEligibilityRevision,
+            row: row
+        )
         let snapshot = coordinator.treeDeletionEvaluationSnapshot
         treeSelectionEligibilityTask = Task.detached(priority: .userInitiated) {
             let eligible = TreeBrowserView.cachedCanInitiateDeletion(
@@ -4665,8 +4680,13 @@ public struct MainView: View {
             )
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard self.treeSelection?.path == expectedPath else { return }
+                guard !Task.isCancelled,
+                      request.isCurrent(
+                          revision: self.treeSelectionEligibilityRevision,
+                          selectedRow: self.treeSelection
+                      ) else { return }
                 self.canDeleteSelectedTreeRow = eligible
+                self.treeSelectionEligibilityTask = nil
             }
         }
     }
@@ -4740,6 +4760,8 @@ public struct MainView: View {
                 && DeletionEntryPolicy.canInitiate(
                     verdict: $0.verdict,
                     rejection: $0.rejection,
+                    hasCompleteAccessEvidence: $0.hasCompleteAccessEvidence,
+                    allowsTargetRevalidation: true,
                     allowsVendorPathOverride: true
                 )
         }
@@ -5338,7 +5360,8 @@ public struct MainView: View {
                             runningBundleIDPrefix: row.runningBundleIDPrefix,
                             accessEvidence: deletionAccessEvidence(
                                 for: row.url.path,
-                                issues: typedIncompleteIssues
+                                issues: typedIncompleteIssues,
+                                frozenEvidence: row.deletionAccessEvidence
                             ),
                             titlePresentation: row.titlePresentation
                         )
@@ -5403,10 +5426,11 @@ public struct MainView: View {
 
     private func deletionAccessEvidence(
         for path: String,
-        issues: [ScanIncompleteIssue]
+        issues: [ScanIncompleteIssue],
+        frozenEvidence: DeletionAccessEvidence
     ) -> DeletionAccessEvidence {
         guard let issue = issues.first(where: { deletionPathsOverlap(path, $0.path) }) else {
-            return .complete
+            return frozenEvidence
         }
         return .incomplete(DeletionIncompleteReason(scanIncompleteReason: issue.reason))
     }
@@ -5470,7 +5494,8 @@ public struct MainView: View {
             vendorName: evaluation.vendor?.name,
             vendorNote: evaluation.vendor?.note,
             runningBundleIDPrefix: evaluation.vendor?.bundleIDPrefix,
-            titlePresentation: entry.titlePresentation
+            titlePresentation: entry.titlePresentation,
+            scanIncompleteReasons: Set(entry.incompleteIssues.map(\.reason))
         )
     }
 

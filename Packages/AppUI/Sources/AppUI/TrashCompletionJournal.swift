@@ -1057,6 +1057,32 @@ final class TrashUndoCommitCapability: @unchecked Sendable {
         })
     }
 
+    /// v2026.10.14: a live App is not a live finalizer. Once this exact owner has stopped,
+    /// recovery may retry its durable callback facts in the same process. Unrelated active
+    /// attempts and unknown AppKit submissions retain their ownership and evidence.
+    @MainActor
+    func persistAndFinish(source: String, in undoHistoryStore: UndoHistoryStore) async -> Bool {
+        let persisted = await undoHistoryStore.addJournalEntriesDurably(source: source, entries: entries)
+        let settled: Bool
+        if persisted {
+            settled = await finishDurablyAfterUndoPersisted(pruningReceiptsIn: undoHistoryStore)
+        } else {
+            settled = false
+        }
+        await Task.detached(priority: .utility) { [self] in
+            let groups = Dictionary(grouping: entries) {
+                TrashPendingAttemptIdentity(operationID: $0.operationID, attemptID: $0.attemptID)
+            }
+            for (attempt, group) in groups {
+                ledger.releaseCompletedAttempt(
+                    paths: group.map(\.originalPath), operationID: attempt.operationID,
+                    attemptID: attempt.attemptID
+                )
+            }
+        }.value
+        return settled
+    }
+
     private var finishedAttemptIdentities: Set<TrashPendingAttemptIdentity> {
         lock.lock()
         defer { lock.unlock() }

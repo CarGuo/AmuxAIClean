@@ -110,6 +110,21 @@ final class TrashCompletionJournalTests: XCTestCase {
         }
     }
 
+    /// v2026.10.14: UndoHistory.json is now a retirement manifest, so receipt assertions must
+    /// inspect the production SQLite authority. Call only after awaited fixture writes/recovery
+    /// have finished; these isolated fixtures have no concurrent writer during this transaction.
+    private func durableUndoSnapshot(at historyURL: URL) throws -> UndoHistoryDatabaseSnapshot {
+        let parent = historyURL.deletingLastPathComponent()
+        let descriptor = Darwin.open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { XCTAssertEqual(Darwin.close(descriptor), 0) }
+        return try UndoHistoryDatabase.withTransaction(
+            at: historyURL.appendingPathExtension("sqlite"), parentDescriptor: descriptor
+        ) { database in
+            try XCTUnwrap(database.loadSnapshot())
+        }
+    }
+
     private func entry(
         fixture: Fixture,
         operationID: UUID = UUID(),
@@ -620,9 +635,9 @@ final class TrashCompletionJournalTests: XCTestCase {
             entries: [observed.entry]
         )
         XCTAssertTrue(persisted)
-        // Inject failure after Undo commit but before receipt prune. The durable journal phase is
-        // still the replay capability; corrupt Undo storage must not consume it.
-        try Data("not-json".utf8).write(to: undoURL)
+        // v2026.10.14: inject failure into the real SQLite authority after Undo commit, not the
+        // retired JSON manifest. Corrupt storage must preserve the journal replay capability.
+        try Data("not-sqlite".utf8).write(to: undoURL.appendingPathExtension("sqlite"))
 
         let finished = await observed.capability.finishDurablyAfterUndoPersisted(
             pruningReceiptsIn: store
@@ -657,12 +672,9 @@ final class TrashCompletionJournalTests: XCTestCase {
         XCTAssertFalse(firstFinished)
         XCTAssertEqual(store.completionJournalState, .blocked)
         XCTAssertEqual(base.snapshot()?.receiptPrunePendingIDs, [observed.entry.id])
-        let afterFailedRemove = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(contentsOf: undoURL))
-                as? [String: Any]
-        )
+        let afterFailedRemove = try durableUndoSnapshot(at: undoURL)
         XCTAssertEqual(
-            (afterFailedRemove["committedJournalIDs"] as? [String: Any])?.count,
+            afterFailedRemove.committedJournalIDs.count,
             0,
             "Receipt is gone, while prune-pending journal evidence remains replayable"
         )
@@ -787,11 +799,7 @@ final class TrashCompletionJournalTests: XCTestCase {
             restartedStore.history[0].filePairs.map(\.journalID),
             [observed.entry.id]
         )
-        let object = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(contentsOf: undoURL))
-                as? [String: Any]
-        )
-        let receipts = try XCTUnwrap(object["committedJournalIDs"] as? [String: Any])
+        let receipts = try durableUndoSnapshot(at: undoURL).committedJournalIDs
         XCTAssertTrue(receipts.isEmpty)
     }
 
@@ -1001,13 +1009,7 @@ final class TrashCompletionJournalTests: XCTestCase {
             operationID: operationID,
             attemptID: attemptID
         ), .alreadyAbsent)
-        let object = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(contentsOf: undoURL))
-                as? [String: Any]
-        )
-        XCTAssertTrue(
-            try XCTUnwrap(object["committedJournalIDs"] as? [String: Any]).isEmpty
-        )
+        XCTAssertTrue(try durableUndoSnapshot(at: undoURL).committedJournalIDs.isEmpty)
     }
 
     @MainActor
@@ -1052,24 +1054,23 @@ final class TrashCompletionJournalTests: XCTestCase {
             fileURL: fixture.ledgerURL,
             activeOperationRegistry: TrashActiveOperationRegistry()
         )
-        let store = UndoHistoryStore(
-            storeURL: fixture.root.appendingPathComponent("UndoHistory.json"),
-            allowedRestoreRoots: [fixture.root.path]
-        )
-        let recoveryDomain = TrashRecoveryDependencyDomain(
-            pendingOperationLedger: ledger,
-            completionJournal: workerJournal,
-            undoHistoryStore: store
-        )
         // v2026.10.14: the real regression has an old callback waiting on an IDLE WAL whose
-        // extended attributes changed. Recovery must preserve earlier records, replay exactly
-        // once, and release the production reservation barrier without any recycle operation.
+        // extended attributes changed. Seed that old format explicitly BEFORE opening the
+        // production SQLite store; the new default cannot manufacture a legacy WAL fixture.
+        // Recovery must preserve earlier records, replay once, and release the production
+        // reservation barrier without any recycle operation.
+        let undoURL = fixture.root.appendingPathComponent("UndoHistory.json")
+        let legacyStore = UndoHistoryStore(
+            storeURL: undoURL,
+            allowedRestoreRoots: [fixture.root.path],
+            persistenceFormat: .legacyJSON
+        )
         for index in 0..<2 {
-            store.addRecord(source: "previous-\(index)", filePairs: [
+            legacyStore.addRecord(source: "previous-\(index)", filePairs: [
                 .init(original: fixture.root.appendingPathComponent("previous-\(index)").path,
                       trashed: fixture.root.appendingPathComponent("trash/previous-\(index)").path)
             ])
-            store.saveHistorySync()
+            legacyStore.saveHistorySync()
         }
         let controls = try FileManager.default.contentsOfDirectory(at: fixture.root,
             includingPropertiesForKeys: nil).filter { $0.lastPathComponent.contains(".schema4-cas.stage-") }
@@ -1080,6 +1081,15 @@ final class TrashCompletionJournalTests: XCTestCase {
                 setxattr(stage.path, "com.amux.test.recovery", $0.baseAddress, $0.count, 0, XATTR_NOFOLLOW)
             }, 0)
         }
+        let store = UndoHistoryStore(
+            storeURL: undoURL,
+            allowedRestoreRoots: [fixture.root.path]
+        )
+        let recoveryDomain = TrashRecoveryDependencyDomain(
+            pendingOperationLedger: ledger,
+            completionJournal: workerJournal,
+            undoHistoryStore: store
+        )
         let lease = try XCTUnwrap(holder.acquireRecoveryLease())
         let operationID = UUID()
         let reservationTask = Task.detached {

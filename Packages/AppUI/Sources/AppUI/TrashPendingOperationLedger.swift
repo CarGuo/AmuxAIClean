@@ -192,6 +192,9 @@ protocol TrashPendingOperationLedger: Sendable {
         operationID: UUID,
         attemptID: UUID
     ) -> TrashPendingLedgerReplayDisposition
+    /// Called only after the exact callback finalizer has stopped using its capability.
+    /// Transfers local recovery ownership without discarding any durable callback fact.
+    func releaseCompletedAttempt(paths: [String], operationID: UUID, attemptID: UUID)
     @discardableResult
     func acknowledgeExactAttempt(
         paths: [String],
@@ -225,6 +228,8 @@ extension TrashPendingOperationLedger {
         attemptID: UUID
     ) -> TrashPendingLedgerReplayDisposition { .storageUnavailable }
 
+    func releaseCompletedAttempt(paths: [String], operationID: UUID, attemptID: UUID) {}
+
     func acknowledgeExactAttempt(
         paths: [String],
         operationID: UUID,
@@ -254,15 +259,17 @@ extension TrashPendingOperationLedger {
 /// older pipeline is between `NSWorkspace.recycle` moving the source and delivering its
 /// callback. At that instant `lstat` reports the source as absent, but clearing the persisted
 /// tombstone would reopen the duplicate-submission boundary. Registration happens before the
-/// reservation transaction begins and removal happens only after the last owned ledger record
-/// reaches a terminal clear. A process restart naturally starts with an empty registry, so the
-/// persisted identity reconciliation remains the cross-restart authority.
+/// reservation transaction begins. v2026.10.14: explicit terminal finalization can also retire
+/// local ownership after a failed durable clear; completed attempt paths can hand recovery back
+/// independently of live siblings. A restart discards those process-local facts, so persisted
+/// process identity and conservative unknown-submission handling remain authoritative there.
 final class TrashActiveOperationRegistry: @unchecked Sendable {
     static let shared = TrashActiveOperationRegistry()
 
     private let lock = NSLock()
     private var operationIDs: Set<UUID> = []
     private var unregisterTransitions: [UUID: Int] = [:]
+    private var releasedAttemptPaths: [TrashPendingAttemptIdentity: Set<String>] = [:]
 
     @discardableResult
     func register(_ operationID: UUID) -> Bool {
@@ -277,6 +284,7 @@ final class TrashActiveOperationRegistry: @unchecked Sendable {
         defer { lock.unlock() }
         guard operationIDs.remove(operationID) != nil else { return false }
         unregisterTransitions[operationID, default: 0] += 1
+        releasedAttemptPaths = releasedAttemptPaths.filter { $0.key.operationID != operationID }
         return true
     }
 
@@ -284,6 +292,38 @@ final class TrashActiveOperationRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return operationIDs.contains(operationID)
+    }
+
+    func releaseCompletedAttempt(_ attempt: TrashPendingAttemptIdentity, paths: Set<String>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard operationIDs.contains(attempt.operationID) else { return }
+        releasedAttemptPaths[attempt, default: []].formUnion(paths)
+    }
+
+    /// Absence is not retirement: another ledger instance may still own a live request.
+    /// v2026.10.14: explicit local finalization, rather than process exit, releases recovery.
+    func hasReleasedOwnership(operationID: UUID, attemptID: UUID?, path: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if !operationIDs.contains(operationID), unregisterTransitions[operationID] != nil {
+            return true
+        }
+        guard let attemptID else { return false }
+        return releasedAttemptPaths[.init(operationID: operationID, attemptID: attemptID)]?
+            .contains(path) == true
+    }
+
+    func isRetired(_ operationID: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !operationIDs.contains(operationID) && unregisterTransitions[operationID] != nil
+    }
+
+    func releasedOperationIDsForReconciliation() -> Set<UUID> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(releasedAttemptPaths.keys.map(\.operationID))
     }
 
     /// Test-only evidence that terminal convergence removes process ownership exactly once.
@@ -486,7 +526,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         let result: TrashPendingLedgerReservation = withTransaction(fallback: .rejected(
             .init(reasonsByPath: Self.reasonMap(paths, reason: .ledgerUnavailable)),
             invalidatedPaths: []
-        )) { envelope in
+        ), retiringClearedOperationOwners: true) { envelope in
             let normalized = normalizedInput
             guard normalized.count == paths.count else {
                 return .value(.rejected(
@@ -526,6 +566,17 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                         reviewIdentity,
                         comparedWith: existing.reviewIdentity
                     )
+                    // v2026.10.14: claim is conservative evidence of a possible system call.
+                    // The same owner can subsequently prove no unknown work remains at finish.
+                    // Retain that fact even when the terminal ledger write failed. Process death
+                    // and an individually released attempt cannot supply this stronger evidence.
+                    if (existing.stage == .submissionUnknown || existing.stage == .callbackPending),
+                       hasLocallyKnownTerminalOutcome(existing) {
+                        Self.invalidate(record: &existing, reason: .interruptedBeforeSubmission)
+                        envelope.records[path] = existing
+                        invalidated.append(path)
+                        ledgerChanged = true
+                    }
                     switch existing.stage {
                     case .needsFreshReview:
                         // **v2026.07.16 durable invalidation**: only a typed scan/review identity
@@ -906,7 +957,11 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
             )
             return changed ? .persistThen(result) : .value(result)
         }
-        if mutation.succeeded, mutation.shouldUnregister {
+        // An empty retained set means the caller has reached a known terminal boundary.
+        // Even if the durable clear failed, no worker owns this reservation any longer.
+        // Recovery requires a new review for unsubmitted work. A true unknown outcome must be
+        // retained by the caller and cannot obtain this whole-operation retirement evidence.
+        if retained.isEmpty || (mutation.succeeded && mutation.shouldUnregister) {
             _ = activeOperationRegistry.unregister(operationID)
         }
         return mutation.succeeded
@@ -1018,6 +1073,13 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         }
     }
 
+    func releaseCompletedAttempt(paths: [String], operationID: UUID, attemptID: UUID) {
+        activeOperationRegistry.releaseCompletedAttempt(
+            .init(operationID: operationID, attemptID: attemptID),
+            paths: Set(paths.map(Self.normalize))
+        )
+    }
+
     func replayDisposition(
         paths: [String],
         operationID: UUID,
@@ -1051,7 +1113,7 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
         return withTransaction(fallback: .init(
             invalidatedPaths: [],
             storageAvailable: false
-        )) { envelope in
+        ), retiringClearedOperationOwners: true) { envelope in
             var invalidated: [String] = []
             var undoJournalBlocked: [String] = []
             var undoJournalBlockedAttempts: Set<TrashPendingAttemptIdentity> = []
@@ -1112,7 +1174,12 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
                     // exited. In particular, source absence may be the successful move awaiting
                     // its callback. Claimed generations therefore remain durable pending instead
                     // of being rewritten merely because another App instance started.
-                    break
+                    if hasLocallyKnownTerminalOutcome(record) {
+                        Self.invalidate(record: &record, reason: .interruptedBeforeSubmission)
+                        envelope.records[path] = record
+                        invalidated.append(path)
+                        changed = true
+                    }
 
                 case .undoJournalBlocked:
                     break
@@ -1177,18 +1244,45 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
 
     private func withTransaction<T>(
         fallback: T,
+        retiringClearedOperationOwners: Bool = false,
         _ body: (inout Envelope) -> TransactionResult<T>
     ) -> T {
         processLock.lock()
         defer { processLock.unlock() }
         guard let value = withCrossProcessLock({
             guard var envelope = loadEnvelope() else { return fallback }
-            switch body(&envelope) {
-            case .value(let result):
-                return result
-            case .persistThen(let result):
-                return persist(envelope) ? result : fallback
+            // v2026.10.14: reserve/reconciliation can finish a previously released callback
+            // after its first durable clear failed. Retire that old local owner at the same
+            // successful commit boundary; otherwise its registry entry survives forever.
+            // A failed post-rename fsync can already remove the old rows from the current JSON,
+            // so explicit released owners are also candidates. A newly registered request has
+            // neither earlier records nor released paths and can never be retired here.
+            let previousOwners: Set<UUID> = retiringClearedOperationOwners
+                ? Set(envelope.records.values.lazy.filter { $0.stage != .needsFreshReview }.map(\.operationID))
+                    .union(activeOperationRegistry.releasedOperationIDsForReconciliation())
+                : []
+            let mutation = body(&envelope)
+            let remainingOwners: Set<UUID> = retiringClearedOperationOwners
+                ? Set(envelope.records.values.lazy.filter { $0.stage != .needsFreshReview }.map(\.operationID))
+                : []
+            let retiredOwners = previousOwners.subtracting(remainingOwners)
+            let result: T
+            let requiresPersistence: Bool
+            switch mutation {
+            case .value(let value):
+                result = value
+                // Reaffirm durability after a failed post-rename clear before retiring the
+                // orphan. An unchanged read alone is not a successful durable clear.
+                requiresPersistence = !retiredOwners.isEmpty
+            case .persistThen(let value):
+                result = value
+                requiresPersistence = true
             }
+            if requiresPersistence, !persist(envelope) { return fallback }
+            for operationID in retiredOwners {
+                _ = activeOperationRegistry.unregister(operationID)
+            }
+            return result
         }) else {
             return fallback
         }
@@ -1397,11 +1491,23 @@ final class PersistentTrashPendingOperationLedger: TrashPendingOperationLedger,
     /// register-before-persist window in this process; the persisted kernel identity is what
     /// makes another App instance's active callback visible. Query failure is not process death.
     private func ownerLiveness(for record: Record) -> TrashLedgerProcessLiveness {
+        if let owner = record.owner, owner == processIdentityProvider(),
+           activeOperationRegistry.hasReleasedOwnership(
+                operationID: record.operationID, attemptID: record.activeAttemptID,
+                path: record.normalizedPath
+           ) {
+            return .inactive
+        }
         if activeOperationRegistry.contains(record.operationID) {
             return .active
         }
         guard let owner = record.owner else { return .unavailable }
         return processLivenessProbe(owner)
+    }
+
+    private func hasLocallyKnownTerminalOutcome(_ record: Record) -> Bool {
+        guard let owner = record.owner, owner == processIdentityProvider() else { return false }
+        return activeOperationRegistry.isRetired(record.operationID)
     }
 
     private enum ProcessIdentityLookup {

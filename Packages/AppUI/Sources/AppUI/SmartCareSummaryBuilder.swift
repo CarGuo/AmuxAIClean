@@ -1,8 +1,9 @@
 import Foundation
 import SafetyKit
+import ScanKit
 
 /// Smart Care 候选来自哪一种现有能力。来源只决定展示分桶优先级，
-/// 最终能否选择和清理仍完全由 `SafetyVerdict` 决定。
+/// 最终选择资格同时要求 SafetyVerdict 与完整的扫描证据。
 public enum SmartCareCandidateSource: String, CaseIterable, Sendable, Hashable {
     case recommended
     case commonAppCache
@@ -24,6 +25,7 @@ public struct SmartCareCandidate: Sendable, Hashable {
     public let fileCount: Int
     public let isDirectory: Bool
     public let verdict: SafetyVerdict
+    public let scanIncompleteReasons: Set<ScanIncompleteReason>
     public let riskNote: String?
     public let riskNotePresentation: LocalizedTextDescriptor?
     public let runningBundleIDPrefix: String?
@@ -40,7 +42,8 @@ public struct SmartCareCandidate: Sendable, Hashable {
                 riskNote: String? = nil,
                 runningBundleIDPrefix: String? = nil,
                 titlePresentation: LocalizedTextDescriptor? = nil,
-                riskNotePresentation: LocalizedTextDescriptor? = nil) {
+                riskNotePresentation: LocalizedTextDescriptor? = nil,
+                scanIncompleteReasons: Set<ScanIncompleteReason> = []) {
         self.source = source
         self.bucketID = bucketID
         self.path = path
@@ -51,6 +54,7 @@ public struct SmartCareCandidate: Sendable, Hashable {
         self.fileCount = fileCount
         self.isDirectory = isDirectory
         self.verdict = verdict
+        self.scanIncompleteReasons = scanIncompleteReasons
         self.riskNote = riskNote
         self.riskNotePresentation = riskNotePresentation
             ?? riskNote.map(LocalizedTextDescriptor.verbatim)
@@ -217,7 +221,8 @@ public enum SmartCareSummaryBuilder {
                 riskNote: row.vendorNote,
                 runningBundleIDPrefix: row.runningBundleIDPrefix,
                 titlePresentation: row.titlePresentation,
-                riskNotePresentation: row.vendorNotePresentation
+                riskNotePresentation: row.vendorNotePresentation,
+                scanIncompleteReasons: row.scanIncompleteReasons
             ))
         }
         return !shouldCancel()
@@ -325,7 +330,8 @@ public enum SmartCareSummaryBuilder {
                     riskNote: candidate.riskNote,
                     runningBundleIDPrefix: candidate.runningBundleIDPrefix,
                     titlePresentation: candidate.titlePresentation,
-                    riskNotePresentation: candidate.riskNotePresentation
+                    riskNotePresentation: candidate.riskNotePresentation,
+                    scanIncompleteReasons: candidate.scanIncompleteReasons
                 )
             )
         }
@@ -519,7 +525,8 @@ public enum SmartCareSummaryBuilder {
             riskNotePresentation: stricter.riskNotePresentation
                 ?? preferred.riskNotePresentation
                 ?? existing.riskNotePresentation
-                ?? incoming.riskNotePresentation
+                ?? incoming.riskNotePresentation,
+            scanIncompleteReasons: existing.scanIncompleteReasons.union(incoming.scanIncompleteReasons)
         )
     }
 
@@ -645,7 +652,8 @@ public enum SmartCareSummaryBuilder {
             titlePresentation: ancestor.titlePresentation,
             riskNotePresentation: descendantIsStricter
                 ? (descendant.riskNotePresentation ?? ancestor.riskNotePresentation)
-                : (ancestor.riskNotePresentation ?? descendant.riskNotePresentation)
+                : (ancestor.riskNotePresentation ?? descendant.riskNotePresentation),
+            scanIncompleteReasons: ancestor.scanIncompleteReasons.union(descendant.scanIncompleteReasons)
         )
     }
 
@@ -675,7 +683,8 @@ public enum SmartCareSummaryBuilder {
             riskNote: firstNonEmpty(candidate.riskNote),
             runningBundleIDPrefix: firstNonEmpty(candidate.runningBundleIDPrefix),
             titlePresentation: titlePresentation,
-            riskNotePresentation: candidate.riskNotePresentation
+            riskNotePresentation: candidate.riskNotePresentation,
+            scanIncompleteReasons: candidate.scanIncompleteReasons
         )
     }
 

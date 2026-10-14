@@ -168,7 +168,7 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
         )
     }
 
-    func test_scanKnownVersionedRoots_权限拒绝子树锁住父候选并保留证据() async throws {
+    func test_scanKnownVersionedRoots_权限拒绝子树独立保留证据不覆盖安全策略() async throws {
         let tmp = try makeTempHome()
         let support = tmp.appendingPathComponent(
             "Library/Developer/Xcode/iOS DeviceSupport",
@@ -196,8 +196,14 @@ final class ScanCoordinatorKnownVersionedRootsTests: XCTestCase {
         let row = try XCTUnwrap(
             coordinator.snapshot.rows.first { $0.url.lastPathComponent == "15.0" }
         )
-        XCTAssertEqual(row.verdict, .forbid)
-        XCTAssertEqual(row.rejection, .accessDenied)
+        // v2026.10.14: the old forbid/accessDenied assertion hid the Professional review
+        // entry. Keep the scan gap typed, while ordinary selection remains unavailable.
+        let safety = coordinator.deletionSafetyEvaluation(for: row.url.path)
+        XCTAssertEqual(row.verdict, safety.verdict)
+        XCTAssertEqual(row.rejection, safety.rejection)
+        XCTAssertTrue(row.scanIncompleteReasons.contains(.permissionDenied))
+        XCTAssertFalse(row.isSelectable)
+        XCTAssertFalse(row.defaultSelected)
         XCTAssertTrue(coordinator.snapshot.isFinished)
         XCTAssertFalse(coordinator.snapshot.isComplete,
                        "候选含未扫描子树时只能发布部分终态，不能伪装成完整成功")

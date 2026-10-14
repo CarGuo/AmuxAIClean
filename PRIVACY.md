@@ -116,6 +116,8 @@ sampling neither reads packet contents nor sends network requests.
 
 ## 3. 本地数据存储
 
+<!-- v2026.10.14：生产撤销历史改用 SQLite；披露旧 JSON 原始字节归档及退役标记，避免把最近批次保留误写成全部迁移证据的保留上限。 -->
+
 以下列出 App 管理的本地状态与用户主动导出的副本。除表中明确写为“用户选择位置”的导出外，
 默认路径都位于当前 macOS 用户账户内：
 
@@ -124,12 +126,16 @@ sampling neither reads packet contents nor sends network requests.
 | `~/Library/Application Support/AmuxAIClean/heuristic.json` | 标准化绝对路径及其祖先前缀、删除/恢复/保留计数和更新时间 | 直到用户清除 |
 | `…/clean_stats.json` | 清理事件时间、字节数和类别；事件最多保留 365 天，另保留累计总量 | 直到重置或清除 |
 | `…/whitelist.json` | 用户加入白名单的绝对路径、可选原因和时间 | 直到移除或清除 |
-| `…/UndoHistory.json` | 最近 10 个移入废纸篓批次的原路径、废纸篓路径、文件身份和恢复状态；另含不带路径的 SHA-256 幂等 receipt，用于跨崩溃去重 | 可见批次超限时移除最旧记录；确认流程先在 completion journal 耐久保留 `receiptPrunePending` 证据，再清 receipt，最后才移除 journal 项，任一崩溃阶段由启动恢复继续 |
+| `…/UndoHistory.json.sqlite` | 生产撤销历史数据库：最近 10 个移入废纸篓批次的原路径、废纸篓路径、文件身份和恢复状态；另含不带路径的 SHA-256 幂等 receipt，用于跨崩溃去重 | 可见批次超限时移除最旧记录；确认流程先在 completion journal 耐久保留 `receiptPrunePending` 证据，再清 receipt，最后才移除 journal 项，任一崩溃阶段由启动恢复继续 |
+| 同一数据库内的旧历史导入证据 | 升级时验证过的旧 `UndoHistory.json` 精确原始字节、文件身份、已导入记录/receipt 标识和退役意图；原字节可能包含旧历史中的绝对路径、恢复状态及经证据验证的中断写入片段 | 为避免迁移时丢弃恢复证据而保留，不随最近 10 批可见历史淘汰；当前无独立自动过期，直到用户按第 4 节清除 App 数据 |
+| `…/UndoHistory.json` | 从 1.6.2 及以后升级时的旧 JSON 历史源；源数据先耐久导入 SQLite，再原位退役为 schema 5 manifest，包含存储格式、数据库文件名和迁移 ID | 退役后保留标记，使旧 writer 拒绝继续写旧格式；SQLite 提交与文件退役分步执行，中断后按已提交证据继续，不丢弃未知损坏或覆盖外部替换对象 |
+| `…/UndoHistory.json.sqlite-journal` | 系统 SQLite 在 DELETE journal 模式下使用的事务回滚文件，可能包含同一数据库的历史页数据 | 由 SQLite 在提交或恢复时管理；异常退出后可能留待恢复，运行中不得单独删除，不能当作普通临时垃圾清理 |
+| 同目录旧 `.UndoHistory.schema4-cas.stage-0`、`.UndoHistory.schema4-cas.stage-1`、`.UndoHistory.schema4-cas.marker-0`、`.UndoHistory.schema4-cas.marker-1` 及 `.UndoHistory.json.sqlite-cutover.<UUID>.tmp` | 旧 JSON/WAL 的历史图像、摘要/身份和事务状态，以及首次发布退役 manifest 的临时文件；旧 stage 可能包含历史路径，manifest 临时文件只含退役信息 | 生产新写入不再使用旧 WAL；升级导入可读取旧证据，不将它们按普通缓存删除。manifest 临时文件正常发布或失败时清理，异常退出可能残留；均可在退出 App 后随 Application Support 目录清除 |
 | `…/trash-pending-operations.json` | 未完成 Trash 操作的原路径、冻结文件身份、恢复范围、operation/attempt、进程 owner 与阶段，用于崩溃后对账 | 对账到可信终态后清理；已提交但未知的记录 fail closed |
 | `…/simulator-managed-operations.json` | CoreSimulator 托管操作的 simulator identifier 与 kind、attempt、进程 owner、scan/review identity、阶段、时间和可选退出码；不保存普通文件路径或 inode | 权威 absent、可重试失败或对应终态收敛后按状态机清理 |
 | `…/trash-completion-journal.json` | 已由 macOS 确认移入废纸篓、但尚未完成撤销事务收尾的短期交接记录；包含操作/尝试 UUID、原路径、废纸篓路径、恢复范围、时间、文件身份，以及已确认 ledger、等待清理 receipt 的阶段标记 | 撤销历史耐久写入、对应 pending ledger 精确确认、receipt 清理全部完成后才删除相应记录（JSON envelope 可以继续作为空文件存在）；写入或对账失败时保留，供下次启动在跨进程恢复锁内幂等重放，不能按普通缓存提前丢弃 |
-| 上述 Trash/Simulator JSON 及 `UndoHistory.json` 旁的 `.lock` 文件 | 跨进程 `flock` 所需的稳定空载荷 inode；不保存路径、身份或用户内容 | 可随所属 Application Support 目录一起清除；运行中不得单独删除或替换 |
-| 同目录的 `.trash-pending.<UUID>.tmp`、`.trash-completion.<UUID>.tmp`、`.UndoHistory.<UUID>.tmp` | 上述三个 Trash/Undo JSON 原子替换前的 `0600` 临时文件，可能包含同一批绝对路径、文件身份和操作状态 | 正常写入会 rename 或失败时 unlink；若进程在两者之间被强制终止，下一次访问对应 store 时会在其稳定跨进程锁内只按精确前缀 + UUID + `.tmp` 形状清理，避免误删相似文件或与活跃 writer 竞态 |
+| 上述 Trash/Simulator JSON 及 `UndoHistory.json` 旁的 `.lock` 文件 | 跨进程 `flock` 所需的稳定空载荷 inode；SQLite 历史继续使用旧 history lock 协调导入与写入，不保存路径、身份或用户内容 | 可随所属 Application Support 目录一起清除；运行中不得单独删除或替换 |
+| 同目录的 `.trash-pending.<UUID>.tmp`、`.trash-completion.<UUID>.tmp`、旧 `.UndoHistory.<UUID>.tmp` | 两个短期 Trash JSON 原子替换前及旧 Undo JSON writer 遗留的 `0600` 临时文件，可能包含同一批绝对路径、文件身份和操作状态；生产 SQLite 不用这些文件提交历史 | 正常 JSON 写入会 rename 或失败时 unlink；若进程在两者之间被强制终止，下一次访问对应 store 时会在其稳定跨进程锁内只按精确前缀 + UUID + `.tmp` 形状清理，避免误删相似文件或与活跃 writer 竞态 |
 | `…/sentinel-pending.json` | 用户启用 Sentinel 后，本地记录热点变化的绝对路径、检测时间和可选大小；相同路径去重，最多 100 条 | Sentinel 运行时滚动覆盖；关闭 Sentinel 不自动删除，直到用户清除 App 数据 |
 | `$TMPDIR/AmuxAIClean-CommonCache-<UUID>/request.json` | 隔离 Common App Cache worker 的短期请求，包含 HOME 绝对路径、已展开的 vendor/path rules 和扫描选项；文件权限 `0600` | 正常路径在启动 worker 前先打开只读 fd 并立即 unlink，worker 只继承 fd；若进程恰在“创建后、unlink 前”异常退出，命名临时目录可能留待 macOS 临时目录管理或用户确认后清理 |
 | `~/Library/Preferences/com.amux.ai.Clean.plist` | 语言/界面/扫描偏好、自定义扫描绝对路径、更新设置、AI 开关/端点/模型/温度/脱敏选项等 | 直到重置或清除 |
@@ -181,7 +187,9 @@ App 包内为该历史 Label 保留“文件名与 Label 对应”的 migration-
 root LaunchDaemon；设置页必须把当前 Agent 与历史 root 状态分开验证。
 
 确认 Sentinel 已注销后退出 AmuxAIClean。确认不再需要撤销历史、白名单、清理统计、设置和
-本地日志，再在终端分别执行：
+本地日志，再在终端分别执行。清除 Application Support 目录会同时移除 SQLite 历史、数据库内
+保留的旧 JSON 原始字节、退役 manifest、旧 WAL 遗留和锁文件；只清除可见历史或日志不等于
+清除了这些迁移证据，运行中不要拆开删除数据库与事务文件：
 
 ```bash
 rm -rf "$HOME/Library/Application Support/AmuxAIClean"

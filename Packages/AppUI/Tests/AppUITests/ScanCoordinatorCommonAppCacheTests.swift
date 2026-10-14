@@ -579,9 +579,15 @@ final class ScanCoordinatorCommonAppCacheTests: XCTestCase {
                        "排序重发布只能改变展示顺序，不能把 partial 终态提升为成功")
         XCTAssertEqual(Set(coord.snapshot.rows), Set(rowsBeforeSort),
                        "专用扫描结果没有通用 buckets，排序不能把已发布 rows 清空")
-        XCTAssertEqual(coord.snapshot.rows.first?.verdict, .forbid,
-                       "不完整统计只能展示为不可选项，不能先作为 safe 再等删除时失败")
-        XCTAssertEqual(coord.snapshot.rows.first?.rejection, .accessDenied)
+        // v2026.10.14: coverage is independent of SafetyEngine. The old synthetic
+        // forbid prevented Professional target review; ordinary selection still stays closed.
+        let partialRow = try XCTUnwrap(coord.snapshot.rows.first)
+        let safety = coord.deletionSafetyEvaluation(for: partialRow.url.path)
+        XCTAssertEqual(partialRow.verdict, safety.verdict)
+        XCTAssertEqual(partialRow.rejection, safety.rejection)
+        XCTAssertFalse(partialRow.hasCompleteAccessEvidence)
+        XCTAssertFalse(partialRow.isSelectable)
+        XCTAssertFalse(partialRow.defaultSelected)
 
         let partition = TrashPipeline.partitionByForbid(
             paths: [cachesRoot.path],

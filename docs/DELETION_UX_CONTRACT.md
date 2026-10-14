@@ -29,7 +29,9 @@ store。禁止通过运行时猜测 XCTest 环境，也禁止任一测试默认�
 构造 production pipeline 或启动 production recovery prewarm。组合根的嵌套导航页面同样必须
 透传这对 owner；即使页面只读取/恢复历史而不提交删除，也不得在内部重新选择 `.shared`。
 
-**v2026.07.20 WAL 跨重启身份规则**：Darwin `st_dev` 是本次挂载实例编号，不是跨重启稳定的
+**v2026.07.20 legacy WAL 跨重启身份规则**：以下规则保留用于旧 JSON 导入与显式 legacy fixture；
+v2026.10.14 的生产历史写入使用 SQLite，不再生成应用自制 WAL，见 §3.6。
+Darwin `st_dev` 是本次挂载实例编号，不是跨重启稳定的
 卷身份。读取持久化 marker/bootstrap 时必须先按原始字段验证 checksum，再证明同一 generation
 内的 marker、stage、reserve 与 destination identity 属于同一个 persisted-device domain；只有在
 固定父目录 descriptor、inode、birth time、generation 与文件类型全部一致后，才允许把该 domain
@@ -189,7 +191,58 @@ session+store revision；Duplicate、Workflow 使用各自 scan evidence；Smart
 冻结其 ScanCoordinator session 与 summary revision；Brew/Uninstall 每次重新扫描候选时生成
 稳定 session，并在该结果集内保持单调 revision。禁止在确认按钮中临时 `UUID()` 冒充新审阅。
 
+**v2026.10.14 同进程已知终态修正**：进程存活不等于某个 finalizer 仍在执行。精确 callback
+完成后的 Undo/清除写入若失败，结束的 owner 必须按 `operationID + attemptID + paths` 交还恢复权，
+不能要求退出整个 App 才可结算；同 operation/attempt 的其他活跃路径仍不可被抢占。
+迟到 callback 确认未移动的路径同样必须交接，即使该路径没有 Undo entry。
+外层明确以空 retained 集合结束整个 operation 时，即使清除账本写失败，本进程也已知道没有未知
+系统请求。只有 persisted owner 等于当前内核进程身份且该 operation 在本地明确退休，才可把残留
+claim 状态转为重新审阅；旧授权仍不可重用。仅 owner 死亡、单 attempt 交接或新进程空 registry
+均不能推导这个事实，真正跨进程 unknown 继续按上面的保守合同处理。
+
+**v2026.10.14 入口完整性与对象证据修正**：清单的 Safety 判定与扫描缺口必须独立保留，不能把
+incomplete 合成为 `.forbid/.accessDenied`，提前封死 Professional 目标重验。Normal 的默认选择、
+普通批量资格、Smart Care 合并、容量分区仍必须排除缺证据项；复制行与合并候选必须保留完整性
+原因，祖先路径和原因应复用同一份证据索引。保留原 Safety 判定不等于授予删除权，Professional 仍走
+目标独立重验和严格确认，真实 OS 权限失败不能被覆盖。卸载发现范围不完整只说明可能有未发现项目，不能
+否定其他完整候选；所选 App 身份失效、扫描取消及候选自身缺少完整/身份快照仍使相应审阅无效。
+
+**v2026.10.14 Tree 选中快照修正**：projection 在通过原有 request/source revision 校验后，必须用
+现有路径索引刷新同一选中行的内容和删除资格。路径未变也可能已从 loading/incomplete 变为完整，
+不能只更新表格而让详情及 Delete/context 入口永久持有旧快照。刷新保留选择身份与滚动位置；选中
+路径消失则清除，用户关闭详情或切换视图后不得恢复旧选择。资格任务还必须绑定 selection revision
+与精确行快照，迟到结果不能覆盖同路径的新证据；不得每帧遍历全树或在主线程重算 verdict。
+
 `OperationResultPayload` 必须引用 receipt；没有 receipt 的预检拒绝、用户取消、路径变化或 hard-forbid 只能进入对应 presentation route，不能进入结果页。
+
+### 3.6 v2026.10.14 Undo SQLite 与旧历史退役
+
+历史持久化是删除前置条件，容量合同或 writer 误判不能让一次成功回收锁死后续全部入口。
+
+- 生产 `UndoHistoryStore` 默认写入 `UndoHistory.json.sqlite`，系统 SQLite 以独立 pair、恢复状态、
+  receipt 与迁移元数据保存事实。内部 `legacyJSON` 仅用于明确生成旧格式 fixture/import，不能在
+  生产 SQLite 失败时回退。最近 10 批保留策略仍适用；旧 JSON 的 8 MiB 与每 record 10,000 pairs
+  是 legacy 解码拒绝边界，不能再作为已接受 callback 写入 SQLite 的聚合上限。
+- 后台 FIFO 与稳定 history flock 内使用 `BEGIN IMMEDIATE`、`journal_mode=DELETE`、
+  `synchronous=EXTRA`、`fullfsync=ON`。SQLite 管理 rollback journal 与事务恢复，应用不得自行
+  重写损坏数据库或清除其 sidecar。数据库 schema 为 1；下述 schema 5 专指旧 JSON 的退役格式。
+  数据库事务的原子性不等于 ledger、completion journal、历史三者的一次原子提交；两个短期 JSON
+  store 仍保留，各自持有稳定锁，沿用 record/receipt、exact ack、receipt prune、journal remove
+  的耐久顺序。依据见 [SQLite 原子提交](https://sqlite.org/atomiccommit.html)。
+- 每次真实请求在 reserve 前必须 join 恢复终态，并让 `prepareForDeletion` 经同一持久化 FIFO
+  重新读取权威历史、实际写入并提交数据库事务。空 journal、一次成功读取或 UI 缓存 `.ready` 都
+  不能替代写入证明；失败时 reservation 和系统提交均为零，并使用 typed 失败弹窗。
+- 升级仍只支持 1.6.2 及以后；不恢复 1.5.9 服务身份或 1.6.0/1.6.1 的 `GSYCleanMac` 历史迁移。
+  在原有 history flock 内，先把已验证旧记录、receipt、水位、源文件精确 bytes/身份与完整退役
+  manifest 提交到数据库。原 bytes 另存为迁移证据，不能静默删弃，也不能当作第二份可写历史。
+- 数据库提交后才退役 `UndoHistory.json`：已有源只通过经过验证的固定 descriptor 写入；首次
+  创建用完整 fsync 的私有临时文件和 `RENAME_EXCL` 发布。manifest 包含 schema 5、SQLite
+  文件名和迁移 ID，使旧 writer 拒绝继续写旧历史。最后再提交 `migration.complete`。这是一组
+  可重放的有序步骤，不是跨 SQLite 与旧文件的单次原子替换。
+- 中断退役只能继续已提交意图允许的原版本、同一对象上的 manifest 精确前缀或完整 manifest。
+  并发替换、未解释内容、未知 schema 和损坏均须保留并拒绝，不能覆盖外部对象。旧 PREPARED
+  中断仅在 marker/stage/reserve 的摘要与身份完整成立、同一 canonical 对象是已验证 stage 的
+  严格前缀时导入完整新图像；不能据此泛化为任意损坏 JSON 的恢复通道。
 
 ## 4. 专业模式覆盖分级
 
@@ -436,6 +489,17 @@ fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单
 19. 所有 public/scripted View 的 pipeline 注入与 Undo owner 必须成对；源码合同测试必须拒绝 View
     内部硬编码 `undoHistoryStore: .shared`。production ledger/journal 的路径型 convenience init
     只能由其 `shared` owner 调用；测试初始化必须显式提供临时 URL 和独立 active registry。
+20. SQLite 必须覆盖超过旧 JSON 8 MiB / 10,000 pairs 的已接受事实、事务失败回滚、并发合并和
+    prepare 真实写入失败时零 reservation/系统提交；旧格式测试必须显式构造 legacy fixture。
+21. 旧历史导入覆盖数据库已提交但 manifest 未完成、manifest 截断/部分写入、完整发布但完成标记
+    未提交的中断窗口；原始 bytes 必须可核对，重复启动不得重复导入。替换对象、篡改 stage/marker、
+    未知损坏与首次发布冲突必须拒绝且保留外部内容；退役后旧 writer 必须拒绝写入。
+22. 同路径 Tree projection 更新必须刷新详情及删除资格；旧任务迟到、用户关闭、切换视图和路径
+    消失不得恢复旧选择。List/暂存/Large Files/Smart Care 的复制与聚合保持 typed incomplete，
+    Normal 不自动获权，Professional 才能进入目标重验；卸载无关发现失败不否定完整选中项。
+23. 已结束 finalizer 在同进程交还 exact attempt/path 恢复权，包含未移动且无 Undo entry 的路径；
+    活跃 sibling 与真正跨进程 unknown 仍保留。已知整 operation 退休后残留 claim 只能重新审阅，
+    不能重用旧授权或再次提交系统调用。
 
 对应测试职责应落在：
 
@@ -470,6 +534,10 @@ fail closed。旧 schema 使用稳定 migration identity，不能绕过上述单
 > Uninstaller typed execution progress 已完成实现与静态审阅，但遵循“先完整落地、后统一测试”，
 > 新增测试、九包全测、Debug build 和真实 App 均未运行；这些新增边界当前仅为 C1，矩阵中的
 > C2/C3/C4 复选框保持未勾选。
+
+> **v2026.10.14 更新边界**：本文记录本轮代码的存储与交互合同；统一回归仍在进行，不能把文档
+> 更新当作测试全部通过或 C4/C5 验收。实际结果与未关闭项以
+> [删除阻断审查](DELETION_BLOCKER_AUDIT_2026-10-14.md)和质量台账为准。
 
 ## 10. 当前已确认的违规点
 

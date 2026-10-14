@@ -892,12 +892,13 @@ final class AppUninstallerTests: XCTestCase {
         XCTAssertEqual(completeInteraction.accessEvidence, .complete)
     }
 
-    func test_统一发现权威_identity根失败与partial都显示缺口并阻断删除() {
+    func test_统一发现权威_身份失败阻断但无关发现缺口不否决完整候选() {
         let completeCandidate = UninstallCandidate(
             path: "/H/Library/Caches/com.acme.demo",
             bytes: 10,
             fileCount: 1,
             isDirectory: true,
+            objectIdentity: TrashObjectIdentity(device: 1, inode: 2, fileType: UInt16(S_IFDIR)),
             matchReason: .bundleID("com.acme.demo")
         )
         let identityIssue = UninstallDiscoveryIssue(
@@ -932,10 +933,11 @@ final class AppUninstallerTests: XCTestCase {
                 UninstallCandidateDiscoveryPresentation.noticeCount(result.incompleteIssues),
                 1
             )
-            XCTAssertFalse(UninstallCandidateDiscoveryPresentation.allowsDeletion(
-                candidates: [completeCandidate],
-                issues: result.incompleteIssues
-            ))
+            // v2026.10.14: an unrelated source's coverage gap does not invalidate
+            // this candidate's complete snapshot or the selected application's identity.
+            XCTAssertEqual(UninstallCandidateDiscoveryPresentation.allowsDeletion(
+                candidates: [completeCandidate], issues: result.incompleteIssues
+            ), issue.source != .selectedAppIdentity)
         }
 
         let snapshotIssue = FSSnapshotIssue(

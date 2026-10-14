@@ -2054,7 +2054,7 @@ private struct SmartCareSelectableItemRow: View {
     }
 
     private var riskTint: Color {
-        SmartCarePresentation.tint(for: item.verdict)
+        SmartCarePresentation.tint(for: item.ordinaryDeletionVerdict)
     }
 }
 

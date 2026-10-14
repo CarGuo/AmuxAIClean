@@ -8,9 +8,9 @@ import LogKit
 ///
 /// **职责**：
 /// - 记录最近 N 次 trash 操作（默认 10），每次记录一个"批次"，含原路径 → 废纸篓路径 pair。
-/// - 把记录持久化到 `~/Library/Application Support/AmuxAIClean/UndoHistory.json`。
-///   App 内读写共享同一 flock；写入以固定 WAL 先落盘，再对已存在文件做 descriptor-bound
-///   rewrite。该协议保证 App 内不会观察到中间态，但不对绕过 flock 的外部读取宣称原子可见。
+/// - v2026.10.14：记录逐项持久化到 `UndoHistory.json.sqlite`，SQLite 事务负责提交与崩溃恢复。
+///   `UndoHistory.json` 只保留迁移完成标记，旧格式的原始字节和身份先在数据库中提交后再退役。
+///   同一 flock 串行化新旧进程的迁移；固定 WAL 仅用于旧格式读取及兼容测试，不再承载新写入。
 /// - 支持单条恢复：只有 `trashedPath` 仍指向写历史时冻结的同一文件对象，才把它移回原路径。
 /// - 若 `originalPath` 已存在，先生成显式冲突计划；只有用户选择“跳过”或“恢复为新名称”后才执行。
 ///   恢复链路本身永远不会移动、覆盖或删除用户后来创建的同名文件。
@@ -24,7 +24,7 @@ import LogKit
 /// 不污染真实用户 Application Support。生产代码用 `UndoHistoryStore.shared`。
 ///
 /// **并发**：`@MainActor`，与 [HeuristicRecorder](file:///Users/amuxuser/workspace/AmuxAIClean/Packages/AppUI/Sources/AppUI/HeuristicRecorder.swift)
-/// 不同——本 store 是 UI 直接消费的（侧栏列表渲染），跑在主 Actor 反而省一层桥接。
+/// 不同——主 Actor 只发布 UI 状态；数据库事务、旧格式迁移、路径探测均在持久化或后台 worker。
 public extension Notification.Name {
     static let amuxUndoDidRestore = Notification.Name("AmuxAIClean.UndoDidRestore")
 }
@@ -385,6 +385,11 @@ public final class UndoHistoryStore: ObservableObject {
     /// 最多保留 N 条，超出按 LRU 丢弃。
     private let maxHistoryCount: Int
     private let storeURL: URL
+    private let persistenceFormat: PersistenceFormat
+
+    // v2026.10.14: production uses SQLite. The legacy format remains an explicit internal
+    // fixture writer for migration and old-version WAL safety tests, never a runtime fallback.
+    enum PersistenceFormat: Sendable { case sqlite, legacyJSON }
     private let legacyStoreURL: URL?
     private let allowedRestoreRoots: [String]
     /// 所有后台落盘都进入同一 FIFO 队列，保证较旧的 snapshot 不会在较新的 snapshot
@@ -422,6 +427,9 @@ public final class UndoHistoryStore: ObservableObject {
     /// MainActor publication-attempt hook for ordering tests. It fires before the latest-revision
     /// guard so a rejected stale completion can be observed without timing-based Task.yield loops.
     private var persistencePublicationHookForTesting: (@Sendable (UInt64) -> Void)?
+    /// Runs only on the asynchronous projection worker after its immutable snapshots are frozen.
+    /// Tests use it to hold preparation while MainActor issues a newer history revision.
+    private var persistenceProjectionPreparationHookForTesting: (@Sendable () -> Void)?
     /// Deterministic interleaving hook for refresh cancellation/CAS tests. It runs on the utility
     /// worker before probing one Trash path and must never call back into this MainActor store.
     private var recoveryRefreshProbeHookForTesting: (@Sendable (String) -> Void)?
@@ -454,13 +462,27 @@ public final class UndoHistoryStore: ObservableObject {
     }
 
     /// 测试 / DI 用初始化器。**默认 synchronous**，保证测试断言可靠。
-    public init(storeURL: URL,
+    public convenience init(storeURL: URL,
                 maxHistoryCount: Int = 10,
                 saveStrategy: SaveStrategy = .synchronous,
                 loadStrategy: LoadStrategy = .synchronous,
                 legacyStoreURL: URL? = nil,
                 allowedRestoreRoots: [String]? = nil) {
+        self.init(storeURL: storeURL, maxHistoryCount: maxHistoryCount,
+                  saveStrategy: saveStrategy, loadStrategy: loadStrategy,
+                  legacyStoreURL: legacyStoreURL, allowedRestoreRoots: allowedRestoreRoots,
+                  persistenceFormat: .sqlite)
+    }
+
+    init(storeURL: URL,
+         maxHistoryCount: Int = 10,
+         saveStrategy: SaveStrategy = .synchronous,
+         loadStrategy: LoadStrategy = .synchronous,
+         legacyStoreURL: URL? = nil,
+         allowedRestoreRoots: [String]? = nil,
+         persistenceFormat: PersistenceFormat) {
         self.storeURL = storeURL
+        self.persistenceFormat = persistenceFormat
         self.legacyStoreURL = legacyStoreURL
         self.maxHistoryCount = maxHistoryCount
         self.restoreBeforeRenameHookForTesting = nil
@@ -480,7 +502,8 @@ public final class UndoHistoryStore: ObservableObject {
                 storeURL: storeURL,
                 legacyStoreURL: legacyStoreURL,
                 maxHistoryCount: maxHistoryCount,
-                fileManager: .default
+                fileManager: .default,
+                persistenceFormat: persistenceFormat
             )
             applyLoadedHistory(loaded)
         case .background:
@@ -511,7 +534,8 @@ public final class UndoHistoryStore: ObservableObject {
                                 // Construct the Foundation reference inside its owning utility
                                 // queue. Capturing an injected FileManager (and possible delegate)
                                 // across this @Sendable boundary violated Swift 6 isolation.
-                                fileManager: FileManager.default
+                                fileManager: FileManager.default,
+                                persistenceFormat: persistenceFormat
                             ))
                         }
                     }
@@ -1016,6 +1040,12 @@ public final class UndoHistoryStore: ObservableObject {
         case failed(reason: String, errno: Int32?)
     }
 
+    private struct VerifiedLegacyMigrationDescriptor {
+        let descriptor: Int32
+        let fingerprint: LegacyMigrationFingerprint
+        let verificationFullReads: Int
+    }
+
     private enum LegacyMigrationRecoveryDisposition {
         case ready(LegacyMigrationTransactionState)
         case committed(LegacyMigrationTransactionState)
@@ -1157,6 +1187,7 @@ public final class UndoHistoryStore: ObservableObject {
         afterSourceFenceHookForTesting: (@Sendable () -> Void)? = nil,
         beforeDestinationCommitHookForTesting: (@Sendable () -> Void)? = nil,
         afterDestinationDescriptorFenceHookForTesting: (@Sendable () -> Void)? = nil,
+        afterWriteOpenHookForTesting: (@Sendable (String, Int32) -> Void)? = nil,
         transactionInterruptionHookForTesting: (@Sendable (String) -> Bool)? = nil,
         commitIODiagnosticHookForTesting: (@Sendable (LegacyMigrationCommitIODiagnostic) -> Void)? = nil,
         maxHistoryCount: Int = 10
@@ -1539,6 +1570,7 @@ public final class UndoHistoryStore: ObservableObject {
             beforePreparedFence: sourceFence,
             beforeDestinationCommitHook: beforeDestinationCommitHookForTesting,
             afterDestinationDescriptorFenceHook: afterDestinationDescriptorFenceHookForTesting,
+            afterWriteOpenHook: afterWriteOpenHookForTesting,
             interruptionHook: transactionInterruptionHookForTesting,
             ioDiagnosticHook: commitIODiagnosticHookForTesting
         ) {
@@ -1577,6 +1609,7 @@ public final class UndoHistoryStore: ObservableObject {
         beforePreparedFence: (@Sendable () -> LegacyMigrationTransactionFailure?)? = nil,
         beforeDestinationCommitHook: (@Sendable () -> Void)? = nil,
         afterDestinationDescriptorFenceHook: (@Sendable () -> Void)? = nil,
+        afterWriteOpenHook: (@Sendable (String, Int32) -> Void)? = nil,
         interruptionHook: (@Sendable (String) -> Bool)? = nil,
         ioDiagnosticHook: (@Sendable (LegacyMigrationCommitIODiagnostic) -> Void)? = nil
     ) -> Result<LegacyMigrationTransactionState, LegacyMigrationTransactionFailure> {
@@ -1604,35 +1637,48 @@ public final class UndoHistoryStore: ObservableObject {
             }
         }
 
-        let stageFD: Int32
+        let openedStage: VerifiedLegacyMigrationDescriptor
         switch openLegacyMigrationStage(
             parentDescriptor: parentDescriptor,
             destinationName: destinationName,
             stageName: ready.payload.stageName,
             expected: ready.payload.stageFingerprint,
-            expectedVersion: ready.payload.stageVersion
+            expectedVersion: ready.payload.stageVersion,
+            afterWriteOpenHook: afterWriteOpenHook
         ) {
-        case .success(let descriptor): stageFD = descriptor
+        case .success(let opened): openedStage = opened
         case .failure(let failure): return .failure(failure)
         }
+        let stageFD = openedStage.descriptor
         defer { Darwin.close(stageFD) }
         guard let reserveName = ready.payload.reserveStageName,
               let reserveFingerprint = ready.payload.reserveStageFingerprint,
               let reserveVersion = ready.payload.reserveStageVersion else {
             return .failure(.init(reason: "missingReserveStage", errno: nil))
         }
-        let reserveFD: Int32
+        let openedReserve: VerifiedLegacyMigrationDescriptor
         switch openLegacyMigrationStage(
             parentDescriptor: parentDescriptor,
             destinationName: destinationName,
             stageName: reserveName,
             expected: reserveFingerprint,
-            expectedVersion: reserveVersion
+            expectedVersion: reserveVersion,
+            afterWriteOpenHook: afterWriteOpenHook
         ) {
-        case .success(let descriptor): reserveFD = descriptor
+        case .success(let opened): openedReserve = opened
         case .failure(let failure): return .failure(failure)
         }
+        let reserveFD = openedReserve.descriptor
         defer { Darwin.close(reserveFD) }
+
+        // v2026.10.14: write-open may itself update macOS provenance/ctime. Carry the
+        // descriptor-verified fingerprints into the WAL intent and every following CAS fence.
+        let openedStageSet = LegacyMigrationStageSet(
+            name: ready.payload.stageName, fingerprint: openedStage.fingerprint,
+            version: ready.payload.stageVersion, reserveName: reserveName,
+            reserveFingerprint: openedReserve.fingerprint, reserveVersion: reserveVersion
+        )
+        var canonicalVerificationFullReads = 0
 
         let transactionID = UUID()
         let rewriting: LegacyMigrationTransactionState
@@ -1642,8 +1688,9 @@ public final class UndoHistoryStore: ObservableObject {
             transactionID: transactionID,
             expectedDestination: destinationSnapshot.fingerprint,
             expectedDestinationVersion: destinationSnapshot.versionEvidence,
-            stageFingerprint: ready.payload.stageFingerprint,
+            stageFingerprint: openedStage.fingerprint,
             stageVersion: ready.payload.stageVersion,
+            stageSet: openedStageSet,
             parentDescriptor: parentDescriptor
         ) {
         case .success(let state): rewriting = state
@@ -1671,11 +1718,11 @@ public final class UndoHistoryStore: ObservableObject {
         guard exactPathFence(
             descriptor: stageFD,
             name: rewriting.payload.stageName,
-            expected: ready.payload.stageFingerprint
+            expected: openedStage.fingerprint
         ), exactPathFence(
             descriptor: reserveFD,
             name: reserveName,
-            expected: reserveFingerprint
+            expected: openedReserve.fingerprint
         ) else {
             return .failure(.init(reason: "controlSlotChangedAfterRewriteIntent", errno: nil))
         }
@@ -1752,32 +1799,20 @@ public final class UndoHistoryStore: ObservableObject {
                   expectedVersion.metadata == expectedDestination.renameStableMetadata else {
                 return .failure(.init(reason: "destinationSnapshotContract", errno: nil))
             }
-            let destinationFD = destinationName.withCString {
-                openat(
-                    parentDescriptor,
-                    $0,
-                    O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
-                )
+            let openedDestination: VerifiedLegacyMigrationDescriptor
+            switch openVerifiedLegacyMigrationEntry(
+                parentDescriptor: parentDescriptor, name: destinationName,
+                expected: expectedDestination, expectedVersion: expectedVersion,
+                requireSecureControlFile: false, afterWriteOpenHook: afterWriteOpenHook
+            ) {
+            case .success(let opened): openedDestination = opened
+            case .failure(let failure):
+                return .failure(.init(reason: "destination\(failure.reason.capitalized)",
+                                      errno: failure.errno))
             }
-            guard destinationFD >= 0 else {
-                return .failure(.init(reason: "destinationOpen", errno: errno))
-            }
+            let destinationFD = openedDestination.descriptor
             defer { Darwin.close(destinationFD) }
-            var openedMetadata = stat()
-            var pathMetadata = stat()
-            let pathProbe = destinationName.withCString {
-                fstatat(parentDescriptor, $0, &pathMetadata, AT_SYMLINK_NOFOLLOW)
-            }
-            guard fstat(destinationFD, &openedMetadata) == 0,
-                  LegacyMigrationFingerprint(openedMetadata) == expectedDestination,
-                  pathProbe == 0,
-                  LegacyMigrationFingerprint(pathMetadata) == expectedDestination else {
-                return .failure(.init(reason: "destinationChangedBeforeDescriptorCommit", errno: nil))
-            }
-            // The canonical payload was read once under this same anchored lock epoch. Exact
-            // descriptor/path fingerprint equality is the CAS fence; re-reading the full JSON
-            // here used to double O(data) work while a ctime-changing same-inode mutation would
-            // already fail the fingerprint check above.
+            canonicalVerificationFullReads = openedDestination.verificationFullReads
             afterDestinationDescriptorFenceHook?()
             if let failure = rewriteLegacyMigrationDestination(
                 data,
@@ -1890,8 +1925,8 @@ public final class UndoHistoryStore: ObservableObject {
         let io = LegacyMigrationCommitIODiagnostic(
             mode: isFirstCreation ? "first_create" : "existing",
             canonicalSnapshotFullReads: isFirstCreation ? 0 : 1,
-            walVerificationFullReads: 0,
-            canonicalVerificationFullReads: 0,
+            walVerificationFullReads: openedStage.verificationFullReads + openedReserve.verificationFullReads,
+            canonicalVerificationFullReads: canonicalVerificationFullReads,
             walFullWrites: 2,
             canonicalFullWrites: isFirstCreation ? 0 : 1,
             markerWrites: 3,
@@ -2602,52 +2637,99 @@ public final class UndoHistoryStore: ObservableObject {
         destinationName: String,
         stageName: String,
         expected: LegacyMigrationFingerprint,
-        expectedVersion: LegacyMigrationVersionEvidence
-    ) -> Result<Int32, LegacyMigrationTransactionFailure> {
+        expectedVersion: LegacyMigrationVersionEvidence,
+        readOnly: Bool = false,
+        afterWriteOpenHook: (@Sendable (String, Int32) -> Void)? = nil
+    ) -> Result<VerifiedLegacyMigrationDescriptor, LegacyMigrationTransactionFailure> {
         guard legacyMigrationControlNames(destinationName: destinationName)
             .stages.contains(stageName) else {
             return .failure(.init(reason: "invalidStageName", errno: nil))
         }
-        let descriptor = stageName.withCString {
+        return openVerifiedLegacyMigrationEntry(
+            parentDescriptor: parentDescriptor, name: stageName,
+            expected: expected, expectedVersion: expectedVersion,
+            requireSecureControlFile: true, readOnly: readOnly,
+            afterWriteOpenHook: afterWriteOpenHook
+        )
+    }
+
+    /// v2026.10.14: O_RDWR can add macOS provenance metadata before the first fstat.
+    /// ctime alone therefore cannot prove that a frozen history version changed. A differing
+    /// fingerprint needs the same object, security metadata and bounded content digest through
+    /// this retained descriptor. Subsequent fences still compare the full refreshed stat.
+    nonisolated private static func openVerifiedLegacyMigrationEntry(
+        parentDescriptor: Int32,
+        name: String,
+        expected: LegacyMigrationFingerprint,
+        expectedVersion: LegacyMigrationVersionEvidence,
+        requireSecureControlFile: Bool,
+        readOnly: Bool = false,
+        afterWriteOpenHook: (@Sendable (String, Int32) -> Void)? = nil
+    ) -> Result<VerifiedLegacyMigrationDescriptor, LegacyMigrationTransactionFailure> {
+        guard validLeafName(name) else {
+            return .failure(.init(reason: "invalidEntryName", errno: EINVAL))
+        }
+        let descriptor = name.withCString {
             openat(
                 parentDescriptor,
                 $0,
-                O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
+                (readOnly ? O_RDONLY : O_RDWR) | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
             )
         }
         guard descriptor >= 0 else {
-            return .failure(.init(reason: "stageOpen", errno: errno))
+            return .failure(.init(reason: "entryOpen", errno: errno))
         }
+        var retainsDescriptor = false
+        defer { if !retainsDescriptor { Darwin.close(descriptor) } }
+        if !readOnly { afterWriteOpenHook?(name, descriptor) }
         var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0,
-              secureLegacyMigrationControlMetadata(
-                metadata,
-                maximumBytes: Int64(maximumStoreBytes)
-              ) else {
-            Darwin.close(descriptor)
-            return .failure(.init(reason: "stageMetadata", errno: nil))
+        guard fstat(descriptor, &metadata) == 0 else {
+            return .failure(.init(reason: "entryStat", errno: errno))
         }
         let openedFingerprint = LegacyMigrationFingerprint(metadata)
-        guard openedFingerprint == expected,
+        let secure = requireSecureControlFile
+            ? openedFingerprint.isSecureControlFile
+            : openedFingerprint.isRegularSingleLink
+                && openedFingerprint.ownerID == UInt32(geteuid())
+        guard secure, openedFingerprint.byteCount <= Int64(maximumStoreBytes),
+              expectedVersion.objectIdentity == expected.objectIdentity,
+              expectedVersion.metadata == expected.renameStableMetadata,
               expectedVersion.objectIdentity == openedFingerprint.objectIdentity,
               expectedVersion.metadata == openedFingerprint.renameStableMetadata else {
-            Darwin.close(descriptor)
-            return .failure(.init(reason: "foreignStageVersion", errno: nil))
+            return .failure(.init(reason: "entryIdentityOrMetadataChanged", errno: nil))
         }
+        let verificationFullReads: Int
+        if openedFingerprint != expected {
+            let data: Data
+            switch readFrozenLegacyData(
+                descriptor: descriptor, expectedByteCount: Int(openedFingerprint.byteCount)
+            ) {
+            case .success(let bytes): data = bytes
+            case .failed(let code):
+                return .failure(.init(reason: "entryVerificationRead", errno: code))
+            }
+            guard LegacyMigrationVersionEvidence(fingerprint: openedFingerprint, data: data)
+                == expectedVersion else {
+                return .failure(.init(reason: "entryContentChanged", errno: nil))
+            }
+            verificationFullReads = 1
+        } else {
+            verificationFullReads = 0
+        }
+        var finalDescriptorMetadata = stat()
         var finalPathMetadata = stat()
-        let finalPathProbe = stageName.withCString {
+        let finalPathProbe = name.withCString {
             fstatat(parentDescriptor, $0, &finalPathMetadata, AT_SYMLINK_NOFOLLOW)
         }
-        // v2026.07.19 P1 performance fix: an exact Darwin fingerprint includes inode identity,
-        // size, mtime and ctime. A same-inode content mutation necessarily changes ctime, which a
-        // non-privileged peer cannot restore. Re-reading both 8 MiB slots before immediately
-        // overwriting them added two O(data) passes without strengthening this CAS fence.
-        guard finalPathProbe == 0,
+        guard fstat(descriptor, &finalDescriptorMetadata) == 0,
+              LegacyMigrationFingerprint(finalDescriptorMetadata) == openedFingerprint,
+              finalPathProbe == 0,
               LegacyMigrationFingerprint(finalPathMetadata) == openedFingerprint else {
-            Darwin.close(descriptor)
-            return .failure(.init(reason: "foreignStageVersion", errno: nil))
+            return .failure(.init(reason: "entryChangedDuringVerification", errno: nil))
         }
-        return .success(descriptor)
+        retainsDescriptor = true
+        return .success(.init(descriptor: descriptor, fingerprint: openedFingerprint,
+                              verificationFullReads: verificationFullReads))
     }
 
     /// Descriptor-bound rewrite of an already-authorized stage/marker inode. The previous marker
@@ -2996,21 +3078,22 @@ public final class UndoHistoryStore: ObservableObject {
         parentDescriptor: Int32,
         name: String,
         expectedFingerprint: LegacyMigrationFingerprint,
+        expectedVersion: LegacyMigrationVersionEvidence,
         requireSecureControlFile: Bool
     ) -> Result<LegacyMigrationFingerprint, LegacyMigrationTransactionFailure> {
         guard validLeafName(name) else {
             return .failure(.init(reason: "durabilityFenceInvalidName", errno: EINVAL))
         }
-        let descriptor = name.withCString {
-            openat(
-                parentDescriptor,
-                $0,
-                O_RDWR | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC
-            )
+        let opened: VerifiedLegacyMigrationDescriptor
+        switch openVerifiedLegacyMigrationEntry(
+            parentDescriptor: parentDescriptor, name: name,
+            expected: expectedFingerprint, expectedVersion: expectedVersion,
+            requireSecureControlFile: requireSecureControlFile
+        ) {
+        case .success(let value): opened = value
+        case .failure(let failure): return .failure(failure)
         }
-        guard descriptor >= 0 else {
-            return .failure(.init(reason: "durabilityFenceOpen", errno: errno))
-        }
+        let descriptor = opened.descriptor
         defer { Darwin.close(descriptor) }
 
         func exactFence() -> Bool {
@@ -3029,7 +3112,7 @@ public final class UndoHistoryStore: ObservableObject {
                 : descriptorFingerprint.isRegularSingleLink
                     && descriptorFingerprint.ownerID == UInt32(geteuid())
             return metadataIsAuthorized
-                && descriptorFingerprint == expectedFingerprint
+                && descriptorFingerprint == opened.fingerprint
                 && pathFingerprint == descriptorFingerprint
         }
 
@@ -3042,7 +3125,7 @@ public final class UndoHistoryStore: ObservableObject {
         guard exactFence() else {
             return .failure(.init(reason: "durabilityFencePostFsyncChanged", errno: nil))
         }
-        return .success(expectedFingerprint)
+        return .success(opened.fingerprint)
     }
 
     nonisolated private static func recoverLegacyMigrationTransaction(
@@ -3126,9 +3209,10 @@ public final class UndoHistoryStore: ObservableObject {
                 destinationName: payload.destinationName,
                 stageName: payload.stageName,
                 expected: payload.stageFingerprint,
-                expectedVersion: payload.stageVersion
+                expectedVersion: payload.stageVersion,
+                readOnly: true
             ) {
-            case .success(let descriptor): activeFD = descriptor
+            case .success(let opened): activeFD = opened.descriptor
             case .failure(let failure):
                 return .rejected(
                     reason: "idle\(failure.reason.capitalized)",
@@ -3145,9 +3229,10 @@ public final class UndoHistoryStore: ObservableObject {
                     destinationName: payload.destinationName,
                     stageName: reserveName,
                     expected: reserveFingerprint,
-                    expectedVersion: reserveVersion
+                    expectedVersion: reserveVersion,
+                    readOnly: true
                 ) {
-                case .success(let descriptor): reserveFD = descriptor
+                case .success(let opened): reserveFD = opened.descriptor
                 case .failure(let failure):
                     return .rejected(
                         reason: "idleReserve\(failure.reason.capitalized)",
@@ -3244,20 +3329,14 @@ public final class UndoHistoryStore: ObservableObject {
             case .absent, .present:
                 return .rejected(reason: "rewritingReserveVersion", errno: nil)
             }
-            let stageSet = LegacyMigrationStageSet(
-                name: payload.stageName,
-                fingerprint: currentStageFingerprint,
-                version: LegacyMigrationVersionEvidence(
-                    fingerprint: currentStageFingerprint,
-                    data: stageData
-                ),
-                reserveName: reserveName,
-                reserveFingerprint: currentReserveFingerprint,
-                reserveVersion: LegacyMigrationVersionEvidence(
-                    fingerprint: currentReserveFingerprint,
-                    data: reserveData
-                )
+            let stageVersion = LegacyMigrationVersionEvidence(
+                fingerprint: currentStageFingerprint, data: stageData
             )
+            let reserveVersion = LegacyMigrationVersionEvidence(
+                fingerprint: currentReserveFingerprint, data: reserveData
+            )
+            let durableStageFingerprint: LegacyMigrationFingerprint
+            let durableReserveFingerprint: LegacyMigrationFingerprint
             // A crash can leave complete scratch bytes visible before their fsync returned. The
             // recovery generation may adopt those bytes only after both exact inodes cross a fresh
             // durability fence; otherwise the older marker remains authoritative.
@@ -3265,9 +3344,10 @@ public final class UndoHistoryStore: ObservableObject {
                 parentDescriptor: parentDescriptor,
                 name: payload.stageName,
                 expectedFingerprint: currentStageFingerprint,
+                expectedVersion: stageVersion,
                 requireSecureControlFile: true
             ) {
-            case .success: break
+            case .success(let fingerprint): durableStageFingerprint = fingerprint
             case .failure(let failure):
                 return .rejected(
                     reason: "rewritingStage\(failure.reason.capitalized)",
@@ -3278,15 +3358,21 @@ public final class UndoHistoryStore: ObservableObject {
                 parentDescriptor: parentDescriptor,
                 name: reserveName,
                 expectedFingerprint: currentReserveFingerprint,
+                expectedVersion: reserveVersion,
                 requireSecureControlFile: true
             ) {
-            case .success: break
+            case .success(let fingerprint): durableReserveFingerprint = fingerprint
             case .failure(let failure):
                 return .rejected(
                     reason: "rewritingReserve\(failure.reason.capitalized)",
                     errno: failure.errno
                 )
             }
+            let stageSet = LegacyMigrationStageSet(
+                name: payload.stageName, fingerprint: durableStageFingerprint,
+                version: stageVersion, reserveName: reserveName,
+                reserveFingerprint: durableReserveFingerprint, reserveVersion: reserveVersion
+            )
             switch transitionLegacyMigrationToIdle(
                 state,
                 stageSet: stageSet,
@@ -3500,6 +3586,9 @@ public final class UndoHistoryStore: ObservableObject {
                 parentDescriptor: parentDescriptor,
                 name: payload.destinationName,
                 expectedFingerprint: currentCanonicalFingerprint,
+                expectedVersion: LegacyMigrationVersionEvidence(
+                    fingerprint: currentCanonicalFingerprint, data: canonicalData
+                ),
                 requireSecureControlFile: false
             ) {
             case .success: break
@@ -3593,6 +3682,7 @@ public final class UndoHistoryStore: ObservableObject {
                 parentDescriptor: parentDescriptor,
                 name: payload.destinationName,
                 expectedFingerprint: verifiedCanonical,
+                expectedVersion: payload.stageVersion,
                 requireSecureControlFile: true
             ) {
             case .success: break
@@ -3927,7 +4017,7 @@ public final class UndoHistoryStore: ObservableObject {
     /// 写一条新记录（最新在最前，超过 maxHistoryCount 丢最旧）。空 pair 直接 no-op。
     public func addRecord(source: String, filePairs: [Record.FilePair]) {
         guard !filePairs.isEmpty else { return }
-        guard filePairs.count <= Self.maximumPairsPerRecord else {
+        guard persistenceFormat == .sqlite || filePairs.count <= Self.maximumPairsPerRecord else {
             storageState = .recordRejected(maxPairs: Self.maximumPairsPerRecord)
             AmuxLog.error(
                 .trash,
@@ -3969,6 +4059,10 @@ public final class UndoHistoryStore: ObservableObject {
         _ hook: (@Sendable (UInt64) -> Void)?
     ) {
         persistencePublicationHookForTesting = hook
+    }
+
+    func setPersistenceProjectionPreparationHookForTesting(_ hook: (@Sendable () -> Void)?) {
+        persistenceProjectionPreparationHookForTesting = hook
     }
 
     func setRecoveryRefreshProbeHookForTesting(
@@ -4546,6 +4640,13 @@ public final class UndoHistoryStore: ObservableObject {
         case moveFailed(String)
     }
 
+    // v2026.10.14: Undo only anchors directories and accesses known leaf names; it never lists
+    // their contents. O_RDONLY unnecessarily requires directory-read permission (including on
+    // .Trash) and can reject an otherwise authorized restore before rename. Darwin O_SEARCH
+    // includes O_DIRECTORY and retains system search/rename checks; NOFOLLOW and identity/device
+    // fences still apply to both source and destination anchors.
+    nonisolated private static let restoreDirectoryOpenFlags: Int32 = O_SEARCH | O_NOFOLLOW | O_CLOEXEC
+
     /// `renameatx_np(RENAME_EXCL)` is the no-replace commit boundary. Directory descriptors keep
     /// the authorized destination parent chain anchored even if pathnames are swapped after the
     /// plan was shown. Darwin has no rename-by-source-fd API; the remaining source-name window is
@@ -4593,7 +4694,7 @@ public final class UndoHistoryStore: ObservableObject {
 
         let sourceParentPath = sourceURL.deletingLastPathComponent().path
         let sourceParentFD = sourceParentPath.withCString {
-            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            Darwin.open($0, restoreDirectoryOpenFlags)
         }
         guard sourceParentFD >= 0 else {
             return errno == ENOENT || errno == ENOTDIR ? .sourceMissing : .sourceUnavailable
@@ -4682,7 +4783,7 @@ public final class UndoHistoryStore: ObservableObject {
             return nil
         }
         var currentFD = root.withCString {
-            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            Darwin.open($0, restoreDirectoryOpenFlags)
         }
         guard currentFD >= 0 else { return nil }
 
@@ -4710,7 +4811,7 @@ public final class UndoHistoryStore: ObservableObject {
                 return nil
             }
             var nextFD = component.withCString {
-                openat(currentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                openat(currentFD, $0, restoreDirectoryOpenFlags)
             }
             if nextFD < 0, errno == ENOENT {
                 let made = component.withCString { mkdirat(currentFD, $0, S_IRWXU) }
@@ -4719,7 +4820,7 @@ public final class UndoHistoryStore: ObservableObject {
                     return nil
                 }
                 nextFD = component.withCString {
-                    openat(currentFD, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                    openat(currentFD, $0, restoreDirectoryOpenFlags)
                 }
             }
             guard nextFD >= 0, directoryMatchesDevice(nextFD) else {
@@ -4853,6 +4954,7 @@ public final class UndoHistoryStore: ObservableObject {
     private func saveHistory() {
         let snapshot = history
         let url = storeURL
+        let format = persistenceFormat
         let limit = maxHistoryCount
         let mutationHook = persistenceMutationHookForTesting
         persistenceRevision &+= 1
@@ -4863,7 +4965,8 @@ public final class UndoHistoryStore: ObservableObject {
             applyPersistedHistory(Self.mergeAndPersist(
                 incoming: snapshot,
                 to: url,
-                maxHistoryCount: limit
+                maxHistoryCount: limit,
+                    persistenceFormat: format
             ), revision: revision)
         case .background:
             persistenceQueue.async { [weak self] in
@@ -4871,18 +4974,19 @@ public final class UndoHistoryStore: ObservableObject {
                 let persisted = Self.mergeAndPersist(
                     incoming: snapshot,
                     to: url,
-                    maxHistoryCount: limit
+                    maxHistoryCount: limit,
+                    persistenceFormat: format
                 )
                 Task { @MainActor [weak self] in
-                    self?.applyPersistedHistory(persisted, revision: revision)
+                    await self?.applyPersistedHistoryAsynchronously(persisted, revision: revision)
                 }
             }
         }
     }
 
-    /// Merges exact callback facts under a stable cross-process lock. Success means the new
-    /// envelope and its commit receipts have crossed fsync + atomic rename; callers may then
-    /// acknowledge the completion journal and pending-operation ledger.
+    /// Merges exact callback facts under a stable cross-process lock. Success means the rows
+    /// and their receipts have committed durably in SQLite; callers may then acknowledge the
+    /// completion journal and pending-operation ledger. Legacy fixtures retain their own WAL.
     @discardableResult
     func addJournalEntriesDurably(
         source: String,
@@ -4890,6 +4994,7 @@ public final class UndoHistoryStore: ObservableObject {
     ) async -> Bool {
         guard !entries.isEmpty else { return true }
         let url = storeURL
+        let format = persistenceFormat
         let limit = maxHistoryCount
         let mutationHook = persistenceMutationHookForTesting
         persistenceRevision &+= 1
@@ -4902,11 +5007,47 @@ public final class UndoHistoryStore: ObservableObject {
                     source: source,
                     entries: entries,
                     to: url,
-                    maxHistoryCount: limit
+                    maxHistoryCount: limit,
+                    persistenceFormat: format
                 ))
             }
         }
-        applyPersistedHistory(persisted, revision: revision)
+        await applyPersistedHistoryAsynchronously(persisted, revision: revision)
+        return persisted.succeeded
+    }
+
+    /// v2026.10.14: an empty callback journal says nothing about the history writer. Join the
+    /// same FIFO as callback/receipt commits, reload durable authority and commit a real write
+    /// before any new deletion reservation. Never authorize from the cached UI storageState.
+    func prepareForDeletion() async -> Bool {
+        let url = storeURL
+        let format = persistenceFormat
+        let queue = persistenceQueue
+        let hook = persistenceMutationHookForTesting
+        persistenceRevision &+= 1
+        let revision = persistenceRevision
+        let persisted = await withCheckedContinuation { continuation in
+            queue.async {
+                hook?("prepare")
+                let result = Self.withHistoryStorage(for: url, format: format) { parent, database in
+                    let loaded = Self.readEnvelope(from: url, parentDescriptor: parent, database: database)
+                    guard loaded.state == .ready else {
+                        return PersistedHistory(envelope: loaded.envelope, state: loaded.state)
+                    }
+                    do {
+                        if let database {
+                            try database.setMetadata(name: "writer.prepare", value: Data(UUID().uuidString.utf8))
+                        }
+                        return PersistedHistory(envelope: loaded.envelope, state: .ready)
+                    } catch {
+                        AmuxLog.error(.trash, "undo_history.database.prepare failed error=\(error)")
+                        return PersistedHistory(envelope: loaded.envelope, state: .writeFailed)
+                    }
+                } ?? PersistedHistory(envelope: .empty, state: .writeFailed)
+                continuation.resume(returning: result)
+            }
+        }
+        await applyPersistedHistoryAsynchronously(persisted, revision: revision)
         return persisted.succeeded
     }
 
@@ -5026,6 +5167,7 @@ public final class UndoHistoryStore: ObservableObject {
     func acknowledgeCompletionJournal(ids: Set<String>) async -> Bool {
         guard !ids.isEmpty else { return true }
         let url = storeURL
+        let format = persistenceFormat
         let mutationHook = persistenceMutationHookForTesting
         persistenceRevision &+= 1
         let revision = persistenceRevision
@@ -5033,10 +5175,10 @@ public final class UndoHistoryStore: ObservableObject {
         let persisted = await withCheckedContinuation { continuation in
             queue.async {
                 mutationHook?("receipt")
-                continuation.resume(returning: Self.pruneCommittedJournalIDs(ids, at: url))
+                continuation.resume(returning: Self.pruneCommittedJournalIDs(ids, at: url, persistenceFormat: format))
             }
         }
-        applyPersistedHistory(persisted, revision: revision)
+        await applyPersistedHistoryAsynchronously(persisted, revision: revision)
         // Receipt pruning is pair-local cleanup. It carries no authority over other operation
         // generations and therefore must never clear the ledger-derived health projection.
         return persisted.succeeded
@@ -5058,6 +5200,7 @@ public final class UndoHistoryStore: ObservableObject {
     public func saveHistorySync() {
         let records = history
         let url = storeURL
+        let format = persistenceFormat
         let limit = maxHistoryCount
         let mutationHook = persistenceMutationHookForTesting
         persistenceRevision &+= 1
@@ -5067,7 +5210,8 @@ public final class UndoHistoryStore: ObservableObject {
             return Self.mergeAndPersist(
                 incoming: records,
                 to: url,
-                maxHistoryCount: limit
+                maxHistoryCount: limit,
+                    persistenceFormat: format
             )
         }
         applyPersistedHistory(persisted, revision: revision)
@@ -5133,19 +5277,65 @@ public final class UndoHistoryStore: ObservableObject {
         revision: UInt64
     ) {
         persistencePublicationHookForTesting?(revision)
-        // v2026.07.18 P2 publication ordering fix: issuing a newer mutation immediately revokes
-        // every older completion's authority, even while that newer write is still queued. Letting
-        // an older success publish here can erase the newer in-memory record permanently when the
-        // newest write later fails.
+        // Explicit synchronous fixture APIs keep their return-after-publication contract.
         guard revision == persistenceRevision,
               revision >= appliedPersistenceRevision else { return }
+        let records = persisted.succeeded ? Self.preservingResolvedRecoveryStates(
+            persisted.envelope.records, current: history
+        ) : nil
+        _ = publishPersistedHistory(
+            persisted, records: records, revision: revision, expectedHistoryRevision: historyRevision
+        )
+    }
+
+    /// v2026.10.14: SQLite removes the aggregate history-size limit, so preserving each pair's
+    /// live recovery state can no longer run on MainActor after a durable write. Freeze immutable
+    /// snapshots, prepare on a utility worker, then CAS both revisions at the shared publication
+    /// boundary. A concurrent history-only observation retries; a newer write revokes this result.
+    private func applyPersistedHistoryAsynchronously(
+        _ persisted: PersistedHistory,
+        revision: UInt64
+    ) async {
+        // Preserve the existing test observation point, including attempts rejected as stale.
+        // It runs once per completion, never once per preparation retry.
+        persistencePublicationHookForTesting?(revision)
+        while revision == persistenceRevision, revision >= appliedPersistenceRevision {
+            let current = history
+            let currentHistoryRevision = historyRevision
+            let preparationHook = persistenceProjectionPreparationHookForTesting
+            let records: [Record]?
+            if persisted.succeeded {
+                records = await Task.detached(priority: .utility) {
+                    preparationHook?()
+                    return Self.preservingResolvedRecoveryStates(
+                        persisted.envelope.records, current: current
+                    )
+                }.value
+            } else {
+                records = nil
+            }
+            if publishPersistedHistory(
+                persisted, records: records, revision: revision,
+                expectedHistoryRevision: currentHistoryRevision
+            ) { return }
+        }
+    }
+
+    /// v2026.07.18/v2026.10.14: issuing a newer write immediately revokes an older completion,
+    /// including while background projection preparation is suspended. History identity is an
+    /// O(1) revision check; array equality would put the wide traversal back on MainActor.
+    private func publishPersistedHistory(
+        _ persisted: PersistedHistory,
+        records: [Record]?,
+        revision: UInt64,
+        expectedHistoryRevision: UInt64
+    ) -> Bool {
+        guard revision == persistenceRevision, revision >= appliedPersistenceRevision,
+              historyRevision == expectedHistoryRevision else { return false }
         appliedPersistenceRevision = revision
         storageState = persisted.state
-        guard persisted.succeeded else { return }
-        publishHistory(Self.preservingResolvedRecoveryStates(
-            persisted.envelope.records,
-            current: history
-        ))
+        if let records { publishHistory(records) }
+        return true
     }
 
     nonisolated private static func preservingResolvedRecoveryStates(
@@ -5193,7 +5383,8 @@ public final class UndoHistoryStore: ObservableObject {
         storeURL: URL,
         legacyStoreURL: URL?,
         maxHistoryCount: Int,
-        fileManager: FileManager
+        fileManager: FileManager,
+        persistenceFormat: PersistenceFormat
     ) -> LoadedHistory {
         if let legacyStoreURL {
             let migration = migrateLegacyStoreIfNeeded(
@@ -5209,10 +5400,11 @@ public final class UndoHistoryStore: ObservableObject {
                 return LoadedHistory(envelope: .empty, state: state)
             }
         }
-        let loaded = withHistoryLock(for: storeURL) { parentDescriptor in
+        let loaded = withHistoryStorage(for: storeURL, format: persistenceFormat) { parentDescriptor, database in
             let loaded = readEnvelope(
                 from: storeURL,
-                parentDescriptor: parentDescriptor
+                parentDescriptor: parentDescriptor,
+                database: database
             )
             guard loaded.state == .ready, loaded.requiresPersistenceMigration else {
                 return loaded
@@ -5222,6 +5414,7 @@ public final class UndoHistoryStore: ObservableObject {
                 to: storeURL,
                 destinationSnapshot: loaded.canonicalSnapshot,
                 transactionState: loaded.transactionState,
+                database: database,
                 parentDescriptor: parentDescriptor
             )
             return LoadedHistory(envelope: persisted.envelope, state: persisted.state)
@@ -5280,7 +5473,208 @@ public final class UndoHistoryStore: ObservableObject {
         }
     }
 
+    // v2026.10.14: history is row-based transactional storage. The JSON/WAL reader below is
+    // only an import boundary, so an accepted callback never has to fit a smaller JSON image.
+    private struct DatabaseCutoverSource: Codable {
+        let fingerprint: LegacyMigrationFingerprint?
+        let data: Data?
+    }
+
+    nonisolated private static func databaseSnapshot(_ envelope: HistoryEnvelope) -> UndoHistoryDatabaseSnapshot {
+        UndoHistoryDatabaseSnapshot(
+            records: envelope.records,
+            committedJournalIDs: envelope.committedJournalIDs,
+            observedLegacyRecordIDs: envelope.legacyReconciliation.observedRecordIDs,
+            observedLegacyReceiptIDs: envelope.legacyReconciliation.observedReceiptIDs
+        )
+    }
+
+    nonisolated private static func historyEnvelope(_ snapshot: UndoHistoryDatabaseSnapshot) -> HistoryEnvelope {
+        HistoryEnvelope(
+            // v2026.10.14: keep the legacy decoder's authority boundary after changing the
+            // storage format. Availability was an earlier process's observation, not a durable
+            // right to restore the current pathname occupant. Only restored is a terminal fact.
+            schemaVersion: 4, records: snapshot.records.map { record in
+                record.updatingRecoveryStates(record.recoveryStates.map {
+                    $0.status == .restored ? $0 : Record.RecoveryState(status: .checking)
+                })
+            },
+            committedJournalIDs: snapshot.committedJournalIDs,
+            legacyReconciliation: LegacyReconciliationState(
+                observedRecordIDs: snapshot.observedLegacyRecordIDs,
+                observedReceiptIDs: snapshot.observedLegacyReceiptIDs
+            )
+        )
+    }
+
     nonisolated private static func readEnvelope(
+        from url: URL,
+        parentDescriptor: Int32,
+        database: UndoHistoryDatabase.Transaction?,
+        migrationHookForTesting: (@Sendable (String) -> Bool)? = nil
+    ) -> LoadedHistory {
+        guard let database else {
+            return readLegacyEnvelope(from: url, parentDescriptor: parentDescriptor)
+        }
+        do {
+            let stored = try database.loadSnapshot()
+            if let stored, try database.metadata(name: "migration.complete") != nil {
+                let envelope = historyEnvelope(stored)
+                return LoadedHistory(envelope: envelope,
+                                     state: validate(envelope, boundedLegacyImage: false) ? .ready : .corrupt)
+            }
+            // A database commit can precede retirement of the old pathname. Until retirement
+            // is durable, retry import under the SAME legacy flock so a still-running old writer
+            // cannot have a newly committed fact silently ignored during an interrupted upgrade.
+            var priorCutoverSource: DatabaseCutoverSource?
+            if let stored, let manifest = try database.metadata(name: "migration.manifest"),
+               let sourceData = try database.metadata(name: "migration.source") {
+                let source = try JSONDecoder().decode(DatabaseCutoverSource.self, from: sourceData)
+                priorCutoverSource = source
+                switch readLegacyMigrationEntry(parentDescriptor: parentDescriptor, name: url.lastPathComponent) {
+                case .present(let fingerprint, let current):
+                    if authorizedCutoverVersion(fingerprint, data: current, source: source, manifest: manifest) {
+                        let envelope = historyEnvelope(stored)
+                        return LoadedHistory(envelope: envelope,
+                                             state: validate(envelope, boundedLegacyImage: false) ? .ready : .corrupt)
+                    }
+                    // A restart must not erase the previous cutover's object authority. A
+                    // cooperative old writer may extend the SAME inode before retirement;
+                    // adopting a replacement as a fresh source would overwrite it next retry.
+                    guard sameDatabaseCutoverObject(fingerprint, as: source.fingerprint) else {
+                        return LoadedHistory(envelope: historyEnvelope(stored), state: .writeFailed)
+                    }
+                case .absent:
+                    guard source.fingerprint == nil, source.data == nil else {
+                        return LoadedHistory(envelope: historyEnvelope(stored), state: .writeFailed)
+                    }
+                case .failed:
+                    return LoadedHistory(envelope: historyEnvelope(stored), state: .readFailed)
+                }
+            }
+
+            if priorCutoverSource != nil,
+               migrationHookForTesting?("beforePendingSourceReload") == true {
+                return LoadedHistory(envelope: stored.map(historyEnvelope) ?? .empty, state: .writeFailed)
+            }
+            var legacy = readLegacyEnvelope(from: url, parentDescriptor: parentDescriptor)
+            if legacy.state != .ready,
+               let recovered = preparedLegacySnapshotForDatabase(
+                   from: url, parentDescriptor: parentDescriptor
+               ) {
+                legacy = recovered
+            }
+            guard legacy.state == .ready else { return legacy }
+            // The legacy reader opens its own verified descriptor. Bind that final read to the
+            // saved migration source as well: a new file can appear after an earlier ENOENT.
+            // Never replace the saved source identity with a raced but decodable foreign file.
+            if let priorCutoverSource,
+               !sameDatabaseCutoverObject(legacy.canonicalSnapshot?.fingerprint, as: priorCutoverSource.fingerprint) {
+                return LoadedHistory(envelope: stored.map(historyEnvelope) ?? .empty, state: .writeFailed)
+            }
+            var envelope = stored.map(historyEnvelope) ?? .empty
+            let currentIDs = Set(envelope.records.map(\.id))
+            let incoming = legacy.envelope.records.filter {
+                currentIDs.contains($0.id)
+                    || !envelope.legacyReconciliation.observedRecordIDs.contains($0.id)
+            }
+            guard let records = mergeRecordSnapshots(
+                disk: envelope.records, incoming: incoming, maxHistoryCount: Int.max,
+                incomingOrderIsAuthoritative: true
+            ) else { return LoadedHistory(envelope: envelope, state: .corrupt) }
+            envelope.records = records
+            for (id, date) in legacy.envelope.committedJournalIDs
+                where !envelope.legacyReconciliation.observedReceiptIDs.contains(id) {
+                envelope.committedJournalIDs[id] = date
+            }
+            envelope.legacyReconciliation.observedRecordIDs.formUnion(legacy.envelope.records.map(\.id))
+            envelope.legacyReconciliation.observedRecordIDs.formUnion(
+                legacy.envelope.legacyReconciliation.observedRecordIDs
+            )
+            envelope.legacyReconciliation.observedReceiptIDs.formUnion(legacy.envelope.committedJournalIDs.keys)
+            envelope.legacyReconciliation.observedReceiptIDs.formUnion(
+                legacy.envelope.legacyReconciliation.observedReceiptIDs
+            )
+            guard validate(envelope, boundedLegacyImage: false) else {
+                return LoadedHistory(envelope: envelope, state: .corrupt)
+            }
+            let source = DatabaseCutoverSource(
+                fingerprint: legacy.canonicalSnapshot?.fingerprint,
+                data: legacy.canonicalSnapshot?.data
+            )
+            let sourceData = try JSONEncoder().encode(source)
+            try database.setMetadata(name: "migration.source", value: sourceData)
+            if let bytes = source.data {
+                let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                // Original bytes are retained, including a verified crash-torn canonical image.
+                // This is migration evidence, not a second writable history authority.
+                try database.setMetadata(name: "migration.archive.\(digest)", value: bytes)
+            }
+            if try database.metadata(name: "migration.manifest") == nil {
+                let manifest = try JSONSerialization.data(withJSONObject: [
+                    "schemaVersion": 5,
+                    "storage": "sqlite",
+                    "database": url.appendingPathExtension("sqlite").lastPathComponent,
+                    "migrationID": UUID().uuidString
+                ], options: [.sortedKeys])
+                try database.setMetadata(name: "migration.manifest", value: manifest)
+            }
+            try database.replaceSnapshot(databaseSnapshot(envelope))
+            return LoadedHistory(envelope: envelope, state: .ready)
+        } catch {
+            AmuxLog.error(.trash, "undo_history.database.read failed error=\(error)")
+            return LoadedHistory(envelope: .empty, state: .readFailed)
+        }
+    }
+
+    /// A legacy PREPARED generation already contains a checksum-verified complete new image.
+    /// The old writer refused a torn canonical because it could not safely overwrite that inode.
+    /// Importing the verified image into a NEW database does not overwrite or reinterpret those
+    /// bytes. Restrict this to the same secure canonical object containing an exact staged prefix;
+    /// foreign complete documents, replaced objects, tampered slots and markers still fail closed.
+    nonisolated private static func preparedLegacySnapshotForDatabase(
+        from url: URL,
+        parentDescriptor: Int32
+    ) -> LoadedHistory? {
+        guard case .loaded(let state) = loadLegacyMigrationTransactionState(
+            parentDescriptor: parentDescriptor, destinationName: url.lastPathComponent
+        ), state.payload.phase == .prepared,
+           let expected = state.payload.expectedDestination,
+           let oldVersion = state.payload.expectedDestinationVersion,
+           let reserveName = state.payload.reserveStageName,
+           let reserveVersion = state.payload.reserveStageVersion,
+           case .present(let current, let canonical) = readLegacyMigrationEntry(
+               parentDescriptor: parentDescriptor, name: url.lastPathComponent
+           ), current.objectIdentity == expected.objectIdentity,
+           current.isRegularSingleLink, current.ownerID == UInt32(geteuid()),
+           current.mode == expected.mode, current.groupID == expected.groupID,
+           current.flags == expected.flags,
+           case .present(let staged, let newData) = readLegacyMigrationEntry(
+               parentDescriptor: parentDescriptor, name: state.payload.stageName
+           ), staged.isSecureControlFile,
+           LegacyMigrationVersionEvidence(fingerprint: staged, data: newData) == state.payload.stageVersion,
+           case .present(let old, let oldData) = readLegacyMigrationEntry(
+               parentDescriptor: parentDescriptor, name: reserveName
+           ), old.isSecureControlFile,
+           LegacyMigrationVersionEvidence(fingerprint: old, data: oldData) == reserveVersion,
+           SHA256.hash(data: oldData).map({ String(format: "%02x", $0) }).joined() == oldVersion.contentSHA256,
+           canonical.count < newData.count, newData.starts(with: canonical),
+           let decoded = decodeEnvelope(newData),
+           let migrated = migrateLegacyJournalIdentifiers(decoded), validate(migrated.envelope) else {
+            return nil
+        }
+        AmuxLog.info(.trash, "undo_history.database.import source=verified_prepared_snapshot")
+        return LoadedHistory(
+            envelope: migrated.envelope, state: .ready,
+            canonicalSnapshot: FrozenDestinationEnvelope(
+                envelope: migrated.envelope, fingerprint: current,
+                versionEvidence: LegacyMigrationVersionEvidence(fingerprint: current, data: canonical),
+                data: canonical, requiresPersistenceMigration: false
+            )
+        )
+    }
+
+    nonisolated private static func readLegacyEnvelope(
         from url: URL,
         parentDescriptor: Int32
     ) -> LoadedHistory {
@@ -5406,14 +5800,14 @@ public final class UndoHistoryStore: ObservableObject {
         }
     }
 
-    nonisolated private static func validate(_ envelope: HistoryEnvelope) -> Bool {
+    nonisolated private static func validate(_ envelope: HistoryEnvelope, boundedLegacyImage: Bool = true) -> Bool {
         guard envelope.schemaVersion == 4,
-              envelope.committedJournalIDs.count <= maximumCommittedJournalIDs,
+              (!boundedLegacyImage || envelope.committedJournalIDs.count <= maximumCommittedJournalIDs),
               envelope.committedJournalIDs.keys.allSatisfy(TrashUndoJournalEntry.isOpaqueID),
-              envelope.legacyReconciliation.observedRecordIDs.count
-                <= maximumLegacyReconciliationIDs,
-              envelope.legacyReconciliation.observedReceiptIDs.count
-                <= maximumLegacyReconciliationIDs,
+              (!boundedLegacyImage || envelope.legacyReconciliation.observedRecordIDs.count
+                <= maximumLegacyReconciliationIDs),
+              (!boundedLegacyImage || envelope.legacyReconciliation.observedReceiptIDs.count
+                <= maximumLegacyReconciliationIDs),
               envelope.legacyReconciliation.observedReceiptIDs
                 .allSatisfy(TrashUndoJournalEntry.isOpaqueID) else {
             return false
@@ -5423,7 +5817,7 @@ public final class UndoHistoryStore: ObservableObject {
         for record in envelope.records {
             guard seenRecordIDs.insert(record.id).inserted,
                   record.fileCount == record.filePairs.count,
-                  record.filePairs.count <= maximumPairsPerRecord,
+                  (!boundedLegacyImage || record.filePairs.count <= maximumPairsPerRecord),
                   record.recoveryStates.count == record.filePairs.count else { return false }
             for pair in record.filePairs {
                 guard pair.original.utf8.count <= maximumPathBytes,
@@ -5549,16 +5943,17 @@ public final class UndoHistoryStore: ObservableObject {
     nonisolated private static func mergeAndPersist(
         incoming: [Record],
         to url: URL,
-        maxHistoryCount: Int
+        maxHistoryCount: Int,
+        persistenceFormat: PersistenceFormat
     ) -> PersistedHistory {
-        guard incoming.allSatisfy({ $0.filePairs.count <= maximumPairsPerRecord }) else {
+        guard persistenceFormat == .sqlite || incoming.allSatisfy({ $0.filePairs.count <= maximumPairsPerRecord }) else {
             return PersistedHistory(
                 envelope: .empty,
                 state: .recordRejected(maxPairs: maximumPairsPerRecord)
             )
         }
-        return withHistoryLock(for: url) { parentDescriptor in
-            let loaded = readEnvelope(from: url, parentDescriptor: parentDescriptor)
+        return withHistoryStorage(for: url, format: persistenceFormat) { parentDescriptor, database in
+            let loaded = readEnvelope(from: url, parentDescriptor: parentDescriptor, database: database)
             guard loaded.state == .ready else {
                 return PersistedHistory(envelope: loaded.envelope, state: loaded.state)
             }
@@ -5576,6 +5971,7 @@ public final class UndoHistoryStore: ObservableObject {
                 to: url,
                 destinationSnapshot: loaded.canonicalSnapshot,
                 transactionState: loaded.transactionState,
+                database: database,
                 parentDescriptor: parentDescriptor
             )
         } ?? PersistedHistory(envelope: .empty, state: .writeFailed)
@@ -5585,7 +5981,8 @@ public final class UndoHistoryStore: ObservableObject {
         source: String,
         entries: [TrashUndoJournalEntry],
         to url: URL,
-        maxHistoryCount: Int
+        maxHistoryCount: Int,
+        persistenceFormat: PersistenceFormat
     ) -> PersistedHistory {
         // Duplicate rows are malformed input even when byte-identical. Silently coalescing them
         // would make validation dependent on Dictionary construction order and hide producer bugs.
@@ -5594,8 +5991,8 @@ public final class UndoHistoryStore: ObservableObject {
         }
         let uniqueEntries = entries
 
-        return withHistoryLock(for: url) { parentDescriptor in
-            let loaded = readEnvelope(from: url, parentDescriptor: parentDescriptor)
+        return withHistoryStorage(for: url, format: persistenceFormat) { parentDescriptor, database in
+            let loaded = readEnvelope(from: url, parentDescriptor: parentDescriptor, database: database)
             guard loaded.state == .ready else {
                 return PersistedHistory(envelope: loaded.envelope, state: loaded.state)
             }
@@ -5651,11 +6048,12 @@ public final class UndoHistoryStore: ObservableObject {
                         to: url,
                         destinationSnapshot: loaded.canonicalSnapshot,
                         transactionState: loaded.transactionState,
+                        database: database,
                         parentDescriptor: parentDescriptor
                     )
                     : PersistedHistory(envelope: envelope, state: .ready)
             }
-            guard envelope.committedJournalIDs.count + pending.count
+            guard database != nil || envelope.committedJournalIDs.count + pending.count
                     <= maximumCommittedJournalIDs else {
                 return PersistedHistory(
                     envelope: envelope,
@@ -5686,7 +6084,7 @@ public final class UndoHistoryStore: ObservableObject {
                     let novelPairs = newPairs.filter { pair in
                         pair.journalID.map { !existingIDs.contains($0) } ?? true
                     }
-                    guard existing.filePairs.count + novelPairs.count
+                    guard database != nil || existing.filePairs.count + novelPairs.count
                             <= maximumPairsPerRecord else {
                         return PersistedHistory(
                             envelope: envelope,
@@ -5704,7 +6102,7 @@ public final class UndoHistoryStore: ObservableObject {
                         journalOperationID: operationID
                     )
                 } else {
-                    guard newPairs.count <= maximumPairsPerRecord else {
+                    guard database != nil || newPairs.count <= maximumPairsPerRecord else {
                         return PersistedHistory(
                             envelope: envelope,
                             state: .recordRejected(maxPairs: maximumPairsPerRecord)
@@ -5730,6 +6128,7 @@ public final class UndoHistoryStore: ObservableObject {
                 to: url,
                 destinationSnapshot: loaded.canonicalSnapshot,
                 transactionState: loaded.transactionState,
+                database: database,
                 parentDescriptor: parentDescriptor
             )
         } ?? PersistedHistory(envelope: .empty, state: .writeFailed)
@@ -5737,10 +6136,11 @@ public final class UndoHistoryStore: ObservableObject {
 
     nonisolated private static func pruneCommittedJournalIDs(
         _ ids: Set<String>,
-        at url: URL
+        at url: URL,
+        persistenceFormat: PersistenceFormat
     ) -> PersistedHistory {
-        withHistoryLock(for: url) { parentDescriptor in
-            let loaded = readEnvelope(from: url, parentDescriptor: parentDescriptor)
+        withHistoryStorage(for: url, format: persistenceFormat) { parentDescriptor, database in
+            let loaded = readEnvelope(from: url, parentDescriptor: parentDescriptor, database: database)
             guard loaded.state == .ready else {
                 return PersistedHistory(envelope: loaded.envelope, state: loaded.state)
             }
@@ -5755,6 +6155,7 @@ public final class UndoHistoryStore: ObservableObject {
                     to: url,
                     destinationSnapshot: loaded.canonicalSnapshot,
                     transactionState: loaded.transactionState,
+                    database: database,
                     parentDescriptor: parentDescriptor
                 )
                 : PersistedHistory(envelope: envelope, state: .ready)
@@ -5826,7 +6227,7 @@ public final class UndoHistoryStore: ObservableObject {
 
         let journalIDs = mergedPairs.compactMap(\.journalID)
         guard journalIDs.count == Set(journalIDs).count,
-              mergedPairs.count <= maximumPairsPerRecord else { return nil }
+              mergedPairs.count == mergedStates.count else { return nil }
 
         return Record(
             id: disk.id,
@@ -5933,7 +6334,8 @@ public final class UndoHistoryStore: ObservableObject {
     nonisolated private static func mergeRecordSnapshots(
         disk: [Record],
         incoming: [Record],
-        maxHistoryCount: Int
+        maxHistoryCount: Int,
+        incomingOrderIsAuthoritative: Bool = false
     ) -> [Record]? {
         var diskByID: [UUID: Record] = [:]
         var diskOrder: [UUID: Int] = [:]
@@ -5964,7 +6366,10 @@ public final class UndoHistoryStore: ObservableObject {
                 ) else { return nil }
                 candidates.append(MergeCandidate(
                     record: mergedRecord,
-                    recencyRank: min(
+                    // v2026.10.14: a later verified version of the SAME legacy source owns
+                    // its order, including ISO-8601 timestamp ties. Independent stale stores
+                    // still use the union rank below; their arrival order is not authority.
+                    recencyRank: incomingOrderIsAuthoritative ? (incomingOrder[record.id] ?? Int.max) : min(
                         diskOrder[current.id] ?? Int.max,
                         incomingOrder[record.id] ?? Int.max
                     )
@@ -6012,8 +6417,23 @@ public final class UndoHistoryStore: ObservableObject {
         to url: URL,
         destinationSnapshot: FrozenDestinationEnvelope?,
         transactionState: LegacyMigrationTransactionState?,
+        database: UndoHistoryDatabase.Transaction? = nil,
         parentDescriptor: Int32
     ) -> PersistedHistory {
+        if let database {
+            guard validate(envelope, boundedLegacyImage: false) else {
+                return PersistedHistory(envelope: envelope, state: .corrupt)
+            }
+            do {
+                try database.replaceSnapshot(databaseSnapshot(envelope))
+                // The outer transaction owns COMMIT. A failed commit discards this result at
+                // withHistoryStorage, so callers cannot acknowledge a merely staged receipt.
+                return PersistedHistory(envelope: envelope, state: .ready)
+            } catch {
+                AmuxLog.error(.trash, "undo_history.database.persist failed error=\(error)")
+                return PersistedHistory(envelope: envelope, state: .writeFailed)
+            }
+        }
         guard validate(envelope), let data = encodeHistory(envelope) else {
             return PersistedHistory(envelope: envelope, state: .corrupt)
         }
@@ -6065,6 +6485,166 @@ public final class UndoHistoryStore: ObservableObject {
                     + "\(failure.errno.map(String.init) ?? "none")"
             )
             return PersistedHistory(envelope: envelope, state: .writeFailed)
+        }
+    }
+
+    nonisolated private static func withHistoryStorage<T>(
+        for url: URL,
+        format: PersistenceFormat,
+        cutoverHookForTesting: (@Sendable (String) -> Bool)? = nil,
+        _ body: (Int32, UndoHistoryDatabase.Transaction?) -> T
+    ) -> T? {
+        withHistoryLock(for: url) { parent -> T? in
+            if format == .legacyJSON { return body(parent, nil) }
+            do {
+                let databaseURL = url.appendingPathExtension("sqlite")
+                let (result, needsCutover) = try UndoHistoryDatabase.withTransaction(
+                    at: databaseURL, parentDescriptor: parent
+                ) { database in
+                    let value = body(parent, database)
+                    let pending = try database.metadata(name: "migration.complete") == nil
+                        && database.metadata(name: "migration.manifest") != nil
+                    return (value, pending)
+                }
+                // Commit the imported rows before retiring the legacy pathname. If interrupted,
+                // next startup retries the idempotent cutover while owning the same old flock.
+                if needsCutover { try UndoHistoryDatabase.withTransaction(
+                    at: databaseURL, parentDescriptor: parent
+                ) { database in
+                    guard try database.metadata(name: "migration.complete") == nil,
+                          let sourceBytes = try database.metadata(name: "migration.source"),
+                          let manifest = try database.metadata(name: "migration.manifest") else { return }
+                    guard let imported = try database.loadSnapshot(),
+                          validate(historyEnvelope(imported), boundedLegacyImage: false) else {
+                        throw UndoHistoryDatabaseError.invalidSnapshot("migrationCutover")
+                    }
+                    let source = try JSONDecoder().decode(DatabaseCutoverSource.self, from: sourceBytes)
+                    guard publishDatabaseCutover(
+                        manifest, source: source, destinationName: url.lastPathComponent,
+                        parentDescriptor: parent, interruptionHook: cutoverHookForTesting
+                    ) else { throw CocoaError(.fileWriteUnknown) }
+                    try database.setMetadata(name: "migration.complete", value: Data([1]))
+                } }
+                return result
+            } catch {
+                AmuxLog.error(.trash, "undo_history.database.transaction failed error=\(error)")
+                return nil
+            }
+        } ?? nil
+    }
+
+    /// v2026.10.14: the production migration boundary is exposed only internally for exact
+    /// crash/CAS fixtures. It uses the same reader, transaction and cutover as normal bootstrap.
+    nonisolated static func migrateDatabaseForTesting(
+        at url: URL,
+        cutoverHook: @escaping @Sendable (String) -> Bool
+    ) -> StorageState {
+        withHistoryStorage(for: url, format: .sqlite, cutoverHookForTesting: cutoverHook) { parent, database in
+            readEnvelope(from: url, parentDescriptor: parent, database: database,
+                         migrationHookForTesting: cutoverHook).state
+        } ?? .writeFailed
+    }
+
+    nonisolated private static func sameDatabaseCutoverObject(
+        _ current: LegacyMigrationFingerprint?,
+        as expected: LegacyMigrationFingerprint?
+    ) -> Bool {
+        guard let current, let expected else { return current == nil && expected == nil }
+        return current.isRegularSingleLink
+            && current.objectIdentity.hasSameStableIdentityIgnoringMountDevice(as: expected.objectIdentity)
+            && current.ownerID == expected.ownerID && current.groupID == expected.groupID
+            && current.mode == expected.mode && current.flags == expected.flags
+    }
+
+    nonisolated private static func authorizedCutoverVersion(
+        _ current: LegacyMigrationFingerprint,
+        data: Data,
+        source: DatabaseCutoverSource,
+        manifest: Data
+    ) -> Bool {
+        guard current.isRegularSingleLink, current.ownerID == UInt32(geteuid()) else { return false }
+        if data == manifest { return true }
+        guard sameDatabaseCutoverObject(current, as: source.fingerprint) else { return false }
+        return data == source.data || (data.count < manifest.count && manifest.starts(with: data))
+    }
+
+    /// The imported rows, exact prior bytes, source identity and full manifest are committed in
+    /// SQLite BEFORE this retirement step. Existing canonical objects are written through their
+    /// verified fd, never replaced by pathname. An interrupted manifest rewrite is resumable from
+    /// that committed intent; foreign replacements and unrelated content are preserved. Initial
+    /// creation publishes a fully synced temp with RENAME_EXCL, so it cannot leave a partial name.
+    nonisolated private static func publishDatabaseCutover(
+        _ manifest: Data,
+        source: DatabaseCutoverSource,
+        destinationName: String,
+        parentDescriptor: Int32,
+        interruptionHook: (@Sendable (String) -> Bool)?
+    ) -> Bool {
+        switch readLegacyMigrationEntry(parentDescriptor: parentDescriptor, name: destinationName) {
+        case .failed: return false
+        case .absent:
+            guard source.fingerprint == nil, source.data == nil else { return false }
+            let temporaryName = ".\(destinationName).sqlite-cutover.\(UUID().uuidString).tmp"
+            let descriptor = temporaryName.withCString {
+                openat(parentDescriptor, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+            }
+            guard descriptor >= 0 else { return false }
+            var published = false
+            defer {
+                Darwin.close(descriptor)
+                if !published {
+                    // Best-effort cleanup of only this invocation's exclusive control temporary.
+                    let removed = temporaryName.withCString { unlinkat(parentDescriptor, $0, 0) }
+                    if removed != 0, errno != ENOENT {
+                        AmuxLog.warning(.trash, "undo_history.database.cutover cleanup errno=\(errno)")
+                    }
+                }
+            }
+            guard writeLegacyMigrationData(manifest, descriptor: descriptor), fsync(descriptor) == 0,
+                  interruptionHook?("beforeFirstPublish") != true else { return false }
+            let renamed = temporaryName.withCString { temporary in
+                destinationName.withCString { destination in
+                    renameatx_np(parentDescriptor, temporary, parentDescriptor, destination, UInt32(RENAME_EXCL))
+                }
+            }
+            guard renamed == 0 else { return false }
+            published = true
+            return fsync(parentDescriptor) == 0
+        case .present(let fingerprint, let bytes):
+            guard authorizedCutoverVersion(fingerprint, data: bytes, source: source, manifest: manifest),
+                  interruptionHook?("beforeDescriptorOpen") != true else { return false }
+            let opened: VerifiedLegacyMigrationDescriptor
+            switch openVerifiedLegacyMigrationEntry(
+                parentDescriptor: parentDescriptor, name: destinationName,
+                expected: fingerprint,
+                expectedVersion: LegacyMigrationVersionEvidence(fingerprint: fingerprint, data: bytes),
+                requireSecureControlFile: false, readOnly: false
+            ) {
+            case .success(let value): opened = value
+            case .failure: return false
+            }
+            defer { Darwin.close(opened.descriptor) }
+            guard interruptionHook?("afterDescriptorOpen") != true,
+                  case .present(let current) = probeLegacyMigrationEntry(
+                    parentDescriptor: parentDescriptor, name: destinationName
+                  ), current == opened.fingerprint else { return false }
+            if bytes != manifest {
+                guard ftruncate(opened.descriptor, 0) == 0,
+                      interruptionHook?("afterManifestTruncate") != true else { return false }
+                if let interruptionHook {
+                    let split = manifest.count / 2
+                    guard writeLegacyMigrationData(Data(manifest.prefix(split)), descriptor: opened.descriptor),
+                          !interruptionHook("afterManifestPartialWrite"),
+                          writeLegacyMigrationData(Data(manifest.dropFirst(split)), descriptor: opened.descriptor) else { return false }
+                } else if !writeLegacyMigrationData(manifest, descriptor: opened.descriptor) { return false }
+            }
+            guard interruptionHook?("afterManifestWrite") != true,
+                  fsync(opened.descriptor) == 0, fsync(parentDescriptor) == 0,
+                  case .present(let final, let finalBytes) = readLegacyMigrationEntry(
+                    parentDescriptor: parentDescriptor, name: destinationName
+                  ), final.objectIdentity == opened.fingerprint.objectIdentity,
+                  finalBytes == manifest else { return false }
+            return true
         }
     }
 

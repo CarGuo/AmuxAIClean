@@ -769,6 +769,13 @@ enum UninstallCandidateTerminalProjection {
 /// v2026.07.17：卸载候选的展示值和删除资格必须消费同一份 typed snapshot。
 /// 预算截断/枚举失败的 bytes 是下界，不能因为路径匹配正确就自动获得删除资格。
 enum UninstallDeletionSelectionPolicy {
+    /// v2026.10.14: discovery coverage is not authority over every found candidate.
+    /// Only a lost selected-app identity or cancelled review invalidates the whole selection;
+    /// each selected candidate must still prove its own complete snapshot and stable identity.
+    static func blocksAllCandidates(_ discoveryIssues: [UninstallDiscoveryIssue]) -> Bool {
+        discoveryIssues.contains { $0.source == .selectedAppIdentity || $0.reason == .cancelled }
+    }
+
     static func isSelectable(_ candidate: UninstallCandidate) -> Bool {
         candidate.hasCompleteSnapshot && candidate.hasStableDeletionIdentity
     }
@@ -781,7 +788,8 @@ enum UninstallDeletionSelectionPolicy {
         _ candidates: [UninstallCandidate],
         discoveryIssues: [UninstallDiscoveryIssue] = []
     ) -> Bool {
-        discoveryIssues.isEmpty && !candidates.isEmpty && candidates.allSatisfy(isSelectable)
+        !blocksAllCandidates(discoveryIssues)
+            && !candidates.isEmpty && candidates.allSatisfy(isSelectable)
     }
 
     static func interactionSnapshot(
@@ -1674,7 +1682,9 @@ public struct UninstallScreen: View {
             Divider()
             if !candidateDiscoveryIssues.isEmpty {
                 discoveryNotice(
-                    key: "uninstall.discovery.partial",
+                    key: hasBlockingCandidateDiscovery
+                        ? "uninstall.discovery.blocked"
+                        : "uninstall.discovery.partial",
                     count: candidateDiscoveryIssues.count
                 )
                 Divider()
@@ -1770,7 +1780,7 @@ public struct UninstallScreen: View {
                 .labelsHidden()
                 .disabled(
                     isDeletionTransactionActive
-                        || !candidateDiscoveryIssues.isEmpty
+                        || hasBlockingCandidateDiscovery
                         || !UninstallDeletionSelectionPolicy.isSelectable(cand)
                 )
             VStack(alignment: .leading, spacing: 2) {
@@ -1837,7 +1847,7 @@ public struct UninstallScreen: View {
             }
             .disabled(
                 candidates.isEmpty
-                    || !candidateDiscoveryIssues.isEmpty
+                    || hasBlockingCandidateDiscovery
                     || isDeletionTransactionActive
             )
 
@@ -1861,7 +1871,7 @@ public struct UninstallScreen: View {
             }
             .disabled(
                 checkedPaths.isEmpty
-                    || !candidateDiscoveryIssues.isEmpty
+                    || hasBlockingCandidateDiscovery
                     || isDeletionTransactionActive
             )
         }
@@ -1904,6 +1914,10 @@ public struct UninstallScreen: View {
         return !selectable.isEmpty && checked.intersection(selectable) == selectable
     }
 
+    private var hasBlockingCandidateDiscovery: Bool {
+        UninstallDeletionSelectionPolicy.blocksAllCandidates(candidateDiscoveryIssues)
+    }
+
     private var checkedPaths: [String] {
         candidates
             .filter { checked.contains($0.path) && UninstallDeletionSelectionPolicy.isSelectable($0) }
@@ -1919,7 +1933,7 @@ public struct UninstallScreen: View {
     }
 
     private func toggleAll() {
-        guard candidateDiscoveryIssues.isEmpty else {
+        guard !hasBlockingCandidateDiscovery else {
             checked.removeAll()
             return
         }
@@ -1995,8 +2009,12 @@ public struct UninstallScreen: View {
             guard completion == .publishResult else { return }
             self.candidates = result.candidates
             self.candidateDiscoveryIssues = result.incompleteIssues
-            if !result.incompleteIssues.isEmpty {
+            if UninstallDeletionSelectionPolicy.blocksAllCandidates(result.incompleteIssues) {
                 self.checked.removeAll()
+            } else {
+                self.checked.formIntersection(
+                    UninstallDeletionSelectionPolicy.selectablePaths(in: result.candidates)
+                )
             }
         }
     }

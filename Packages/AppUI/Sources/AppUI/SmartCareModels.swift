@@ -1,5 +1,6 @@
 import Foundation
 import SafetyKit
+import ScanKit
 
 enum SmartCareAggregationCancellation {
     static let checkStride = 256
@@ -36,6 +37,7 @@ public struct SmartCareItem: Identifiable, Sendable, Hashable {
     public let fileCount: Int
     public let isDirectory: Bool
     public let verdict: SafetyVerdict
+    public let scanIncompleteReasons: Set<ScanIncompleteReason>
     public let riskNote: String?
     public let riskNotePresentation: LocalizedTextDescriptor?
     public let runningBundleIDPrefix: String?
@@ -52,7 +54,8 @@ public struct SmartCareItem: Identifiable, Sendable, Hashable {
                 riskNote: String? = nil,
                 runningBundleIDPrefix: String? = nil,
                 titlePresentation: LocalizedTextDescriptor? = nil,
-                riskNotePresentation: LocalizedTextDescriptor? = nil) {
+                riskNotePresentation: LocalizedTextDescriptor? = nil,
+                scanIncompleteReasons: Set<ScanIncompleteReason> = []) {
         self.id = id
         self.bucketID = bucketID
         self.path = path
@@ -63,6 +66,7 @@ public struct SmartCareItem: Identifiable, Sendable, Hashable {
         self.fileCount = fileCount
         self.isDirectory = isDirectory
         self.verdict = verdict
+        self.scanIncompleteReasons = scanIncompleteReasons
         self.riskNote = riskNote
         self.riskNotePresentation = riskNotePresentation
             ?? riskNote.map(LocalizedTextDescriptor.verbatim)
@@ -78,11 +82,17 @@ public struct SmartCareItem: Identifiable, Sendable, Hashable {
     }
 
     public var isSelectable: Bool {
-        verdict != .forbid
+        verdict != .forbid && scanIncompleteReasons.isEmpty
     }
 
     public var isDefaultSelected: Bool {
-        verdict == .safe
+        verdict == .safe && scanIncompleteReasons.isEmpty
+    }
+
+    /// v2026.10.14: Normal's selectable-capacity partition also requires complete evidence.
+    /// This presentation does not overwrite the underlying SafetyEngine verdict.
+    var ordinaryDeletionVerdict: SafetyVerdict {
+        scanIncompleteReasons.isEmpty ? verdict : .forbid
     }
 }
 
@@ -158,7 +168,7 @@ public struct SmartCareBucketSummary: Identifiable, Sendable, Hashable {
                shouldCancel() {
                 return nil
             }
-            switch item.verdict {
+            switch item.ordinaryDeletionVerdict {
             case .safe:
                 safeItems.append(item)
                 safeIDs.insert(item.id)
@@ -295,7 +305,7 @@ public struct SmartCareSummary: Sendable, Hashable {
                 processed &+= 1
                 items.append(item)
                 itemIDs.insert(item.id)
-                switch item.verdict {
+                switch item.ordinaryDeletionVerdict {
                 case .safe: safeItems.append(item)
                 case .confirm: confirmItems.append(item)
                 case .forbid: forbidItems.append(item)
@@ -791,7 +801,8 @@ public struct SmartCareCleanRequest: Identifiable, Sendable, Hashable {
                 vendorNote: item.riskNote,
                 runningBundleIDPrefix: item.runningBundleIDPrefix,
                 titlePresentation: item.titlePresentation,
-                vendorNotePresentation: item.riskNotePresentation
+                vendorNotePresentation: item.riskNotePresentation,
+                scanIncompleteReasons: item.scanIncompleteReasons
             ))
             bytes &+= item.bytes
             if item.verdict == .confirm { confirmations &+= 1 }

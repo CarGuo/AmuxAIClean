@@ -59,8 +59,8 @@ enum RowViewLiveLocalization {
 }
 
 /// 列表行 —— 颜色徽章 + 体积条 + 勾选框。
-/// 默认勾选仍只有 `.safe`；专业模式可显式开放 vendorPathRule 风险项进入严格确认，
-/// 其它 `.forbid` 始终锁定。
+/// v2026.10.14: Professional may initiate target revalidation for incomplete evidence;
+/// default selection and ordinary mode still require complete scan evidence.
 struct RowView: View {
     let row: RowItem
     @Binding var selected: Bool
@@ -82,9 +82,11 @@ struct RowView: View {
                     Toggle("", isOn: $selected)
                         .toggleStyle(.checkbox)
                         .labelsHidden()
-                        .help(requiresVendorPathOverride
-                              ? Text("delete.vendor_override.risk", bundle: .module)
-                              : Text(row.url.path))
+                        .help(!row.hasCompleteAccessEvidence
+                              ? Text("delete.scan_incomplete_override.risk", bundle: .module)
+                              : requiresVendorPathOverride
+                                ? Text("delete.vendor_override.risk", bundle: .module)
+                                : Text(row.url.path))
                 } else {
                     Image(systemName: "lock.fill")
                         .foregroundStyle(.secondary)
@@ -145,6 +147,8 @@ struct RowView: View {
         DeletionEntryPolicy.canInitiate(
             verdict: row.verdict,
             rejection: row.rejection,
+            hasCompleteAccessEvidence: row.hasCompleteAccessEvidence,
+            allowsTargetRevalidation: allowsVendorPathOverride,
             allowsVendorPathOverride: allowsVendorPathOverride
         )
     }
